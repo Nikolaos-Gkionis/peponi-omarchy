@@ -2,7 +2,7 @@
 
 Keyboard-first **one-day** focus overlay for **paid** [peponi.to](https://peponi.to) accounts on [Omarchy](https://omarchy.org/).
 
-Browse today with `←` / `→`, open **Not Yet** with `y`, jump to today with `t`. Data comes from peponi.to through a small local `peponi` CLI.
+Browse today with `←` / `→`, add with `n`, remove with `Delete`, open **Not Yet** with `y`, jump to today with `t`. Data comes from peponi.to through a small local `peponi` CLI.
 
 ![Peponi One Day overlay](preview.png)
 
@@ -55,7 +55,7 @@ export PEPONI_BASE_URL=http://127.0.0.1:3000
 
 - Omarchy Linux (Quickshell + `omarchy` CLI)
 - A **paid** peponi.to account
-- peponi.to `/api/v1` desktop endpoints deployed
+- peponi.to `/api/v1` desktop endpoints deployed (including add/remove)
 - `curl`, `python3`
 
 ## After install
@@ -64,6 +64,8 @@ export PEPONI_BASE_URL=http://127.0.0.1:3000
 peponi auth login
 peponi auth status --json
 peponi day $(date +%F) --json
+peponi add $(date +%F) "Buy milk"
+peponi rm ID
 peponi not-yet --json
 ```
 
@@ -71,7 +73,7 @@ Credentials: `~/.config/peponi/credentials.json` (mode `0600`).
 
 ## Keybindings
 
-**In-overlay:** `←`/`→` day · `y` Not Yet · `t` today · `Esc` close · `?` help · `a` sign in (signed out only)
+**In-overlay:** `←`/`→` day · `n` add · `Delete` remove · `y` Not Yet · `t` today · `Esc` close · `?` help · `a` sign in (signed out only)
 
 **Optional global** (setup script or `scripts/install-binding.sh`):
 
@@ -105,4 +107,4 @@ docs/
 
 ## Publishing this repo
 
-When you create the GitHub remote, the install line above works unchanged. The Rails `/api/v1` API lives in the peponi.to app — not in this repository.
+When you create the GitHub remote, the install line above works unchanged. Keep `preview.png` at the repository root so [plugins.omarchy.org](https://plugins.omarchy.org/) can show it on listing cards. The Rails `/api/v1` API lives in the peponi.to app — not in this repository.

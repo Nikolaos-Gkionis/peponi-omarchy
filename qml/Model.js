@@ -76,7 +76,7 @@ function demoEnabled() {
   return false
 }
 
-// Shape API / CLI day JSON → DayView rows ({ title, done, list })
+// Shape API / CLI day JSON → DayView rows ({ id, title, done, list })
 function tasksFromDayJson(raw) {
   var data = ({})
   try { data = JSON.parse(raw || "{}") } catch (e) { return [] }
@@ -85,6 +85,7 @@ function tasksFromDayJson(raw) {
   for (var i = 0; i < rows.length; i++) {
     var t = rows[i] || {}
     out.push({
+      id: t.id,
       title: String(t.title || ""),
       done: t.completed === true || t.done === true,
       list: String(t.list || ""),
@@ -108,6 +109,7 @@ function notYetFromJson(raw) {
       var t = todos[i] || {}
       if (t.is_visual_break === true) continue
       out.push({
+        id: t.id,
         title: String(t.title || ""),
         list: listName,
         done: t.completed === true
@@ -162,7 +164,12 @@ function tasksForDate(date) {
   var rows = demoByWeekday[d.getDay()] || []
   var out = []
   for (var i = 0; i < rows.length; i++) {
-    out.push({ title: rows[i].title, done: rows[i].done === true, list: rows[i].list || "" })
+    out.push({
+      id: "demo-" + d.getDay() + "-" + i,
+      title: rows[i].title,
+      done: rows[i].done === true,
+      list: rows[i].list || ""
+    })
   }
   return out
 }

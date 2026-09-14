@@ -24,13 +24,14 @@ Item {
   property string notYetTitle: "Not Yet"
   property int openTaskCount: 0
   property int authWatchTicks: 0
+  property bool mutating: false
 
   property date selectedDate: Model.startOfToday()
   property var dayTasks: []
   property var notYetItems: []
 
   readonly property bool demoMode: Quickshell.env("PEPONI_DEMO") === "1"
-  readonly property bool busy: probing || loadingDay || loadingNotYet
+  readonly property bool busy: probing || loadingDay || loadingNotYet || mutating
 
   function peponiBin() {
     // Absolute path first so Quickshell Process finds it without a login shell PATH.
@@ -92,6 +93,63 @@ Item {
 
   function reloadAll() {
     refreshAuth()
+  }
+
+  // Add a Focus-column task on selectedDate (or dateObj).
+  function addTask(dateObj, title) {
+    title = String(title || "").trim()
+    if (title === "") return
+    var when = dateObj instanceof Date ? dateObj : selectedDate
+    if (demoMode) {
+      var copy = []
+      for (var i = 0; i < dayTasks.length; i++) copy.push(dayTasks[i])
+      copy.push({
+        id: "demo-" + Date.now(),
+        title: title,
+        done: false,
+        list: "",
+        is_visual_break: false
+      })
+      dayTasks = copy
+      openTaskCount = Model.openCount(dayTasks)
+      lastError = ""
+      return
+    }
+    if (!authenticated) return
+    mutating = true
+    lastError = ""
+    startPeponi(mutateProcess, ["add", Model.keyForDate(when), title, "--json"])
+  }
+
+  // Delete by API id (from the day JSON). Demo ids are local-only strings.
+  function removeTask(id) {
+    if (id === undefined || id === null || String(id) === "") return
+    if (demoMode) {
+      var kept = []
+      for (var i = 0; i < dayTasks.length; i++) {
+        if (String(dayTasks[i].id) !== String(id)) kept.push(dayTasks[i])
+      }
+      dayTasks = kept
+      openTaskCount = Model.openCount(dayTasks)
+      lastError = ""
+      return
+    }
+    if (!authenticated) return
+    mutating = true
+    lastError = ""
+    startPeponi(mutateProcess, ["rm", String(id), "--json"])
+  }
+
+  function applyMutate(stdoutText, exitCode, stderrText) {
+    mutating = false
+    if (exitCode !== 0) {
+      var detail = String(stderrText || stdoutText || "").trim().split("\n")[0]
+      lastError = detail !== "" ? detail : "Could not save task"
+      statusMessage = lastError
+      return
+    }
+    lastError = ""
+    loadDay(selectedDate)
   }
 
   // Open the user's default terminal and run `peponi auth login`.
@@ -207,6 +265,22 @@ Item {
     }
     onExited: function(exitCode) {
       root.applyNotYet(notYetStdout.text, exitCode)
+    }
+  }
+
+  Process {
+    id: mutateProcess
+    command: []
+    stdout: StdioCollector {
+      id: mutateStdout
+      waitForEnd: true
+    }
+    stderr: StdioCollector {
+      id: mutateStderr
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      root.applyMutate(mutateStdout.text, exitCode, mutateStderr.text)
     }
   }
 

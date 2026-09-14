@@ -40,11 +40,13 @@ Right-click the bar icon to refresh day data.
 | Key | Action |
 |-----|--------|
 | `←` / `→` | Previous / next day |
+| `n` | Add a task on this day |
+| `Delete` / `Backspace` | Remove the highlighted task |
 | `y` | Toggle Not Yet drawer |
 | `t` | Jump to today |
 | `a` | Sign in (opens terminal; signed out only) |
 | `↑` / `↓` | Move in the list |
-| `Esc` | Close drawer, then overlay |
+| `Esc` | Close composer / drawer, then overlay |
 | `?` | Shortcuts help |
 
 ### Optional global chords
@@ -75,6 +77,8 @@ omarchy bar put peponi.one-day --section right
 peponi auth login
 peponi auth status --json
 peponi day $(date +%F) --json
+peponi add $(date +%F) "Buy milk"
+peponi rm ID
 peponi not-yet --json
 peponi auth logout
 ```

@@ -24,6 +24,8 @@ Item {
   property bool opened: false
   property bool drawerOpen: false
   property bool helpOpen: false
+  property bool composing: false
+  property string composerText: ""
 
   // Selected calendar day (noon-normalized).
   property date selectedDate: Model.startOfToday()
@@ -62,6 +64,7 @@ Item {
     root.selectedDate = Model.parsePayloadDate(payloadJson)
     root.drawerOpen = false
     root.helpOpen = false
+    root.cancelComposer()
     root.reloadDay()
     root.opened = true
     Qt.callLater(function() {
@@ -72,6 +75,7 @@ Item {
   function close() {
     root.drawerOpen = false
     root.helpOpen = false
+    root.cancelComposer()
     root.opened = false
   }
 
@@ -219,6 +223,10 @@ Item {
   }
 
   function handleEscape() {
+    if (root.composing) {
+      root.cancelComposer()
+      return
+    }
     if (root.helpOpen) {
       root.helpOpen = false
       return
@@ -229,6 +237,50 @@ Item {
       return
     }
     root.dismiss()
+  }
+
+  // One-line "new task" field at the bottom of the card.
+  function openComposer() {
+    if ((!root.signedIn && !root.demoMode) || root.drawerOpen || root.helpOpen)
+      return
+    root.composing = true
+    root.composerText = ""
+    Qt.callLater(function() {
+      if (composerInput) composerInput.forceActiveFocus()
+    })
+  }
+
+  function cancelComposer() {
+    root.composing = false
+    root.composerText = ""
+    Qt.callLater(function() {
+      if (keyCatcher) keyCatcher.forceActiveFocus()
+    })
+  }
+
+  function submitComposer() {
+    var title = String(root.composerText || "").trim()
+    root.cancelComposer()
+    if (title === "") return
+    if (root.service && typeof root.service.addTask === "function")
+      root.service.addTask(root.selectedDate, title)
+  }
+
+  // Delete the highlighted day row (↑ / ↓ first). Not "mark complete".
+  function removeSelectedTask() {
+    if ((!root.signedIn && !root.demoMode) || root.drawerOpen || root.composing || root.helpOpen)
+      return
+    if (!dayView.cursorActive || !dayView.tasks || dayView.tasks.length === 0) {
+      root.authBanner = "Highlight a task with ↑ / ↓, then Delete"
+      return
+    }
+    var task = dayView.tasks[dayView.selectedIndex]
+    if (!task || task.id === undefined || task.id === null || String(task.id) === "") {
+      root.authBanner = "This task has no id — reload the day and try again"
+      return
+    }
+    if (root.service && typeof root.service.removeTask === "function")
+      root.service.removeTask(task.id)
   }
 
   Connections {
@@ -325,6 +377,21 @@ Item {
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+          // Composer: Esc cancel, Enter save; other keys go to TextInput.
+          if (root.composing) {
+            if (event.key === Qt.Key_Escape) {
+              root.cancelComposer()
+              event.accepted = true
+              return
+            }
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              root.submitComposer()
+              event.accepted = true
+              return
+            }
+            return
+          }
+
           // Esc: close help → drawer → overlay
           if (event.key === Qt.Key_Escape) {
             root.handleEscape()
@@ -358,6 +425,12 @@ Item {
             return
           }
 
+          if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && !root.drawerOpen) {
+            root.removeSelectedTask()
+            event.accepted = true
+            return
+          }
+
           // Letter shortcuts (Peponi GUI cues)
           var t = event.text
           if (t === "y" || t === "Y") {
@@ -367,6 +440,11 @@ Item {
           }
           if (t === "t" || t === "T") {
             root.goToToday()
+            event.accepted = true
+            return
+          }
+          if ((t === "n" || t === "N") && (root.signedIn || root.demoMode) && !root.drawerOpen) {
+            root.openComposer()
             event.accepted = true
             return
           }
@@ -440,9 +518,11 @@ Item {
 
             Text {
               // Sign-in chord is only useful when logged out.
-              text: (!root.signedIn && !root.demoMode)
-                    ? "← → day  ·  y not yet  ·  t today  ·  a sign in  ·  esc close  ·  ?"
-                    : "← → day  ·  y not yet  ·  t today  ·  esc close  ·  ?"
+              text: root.composing
+                    ? "enter save  ·  esc cancel"
+                    : ((!root.signedIn && !root.demoMode)
+                      ? "← → day  ·  y not yet  ·  t today  ·  a sign in  ·  esc close  ·  ?"
+                      : "← → day  ·  n add  ·  del remove  ·  y not yet  ·  t today  ·  esc close  ·  ?")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -489,7 +569,7 @@ Item {
           DayView {
             id: dayView
             width: parent.width
-            height: parent.height - Style.space(120)
+            height: parent.height - Style.space(120) - (root.composing ? Style.space(56) : 0)
             tasks: root.dayTasks
             foreground: root.foreground
             dim: root.dim
@@ -497,6 +577,64 @@ Item {
             selectedBackground: root.selectedBackground
             selectedText: root.selectedText
             fontFamily: root.fontFamily
+          }
+
+          // New-task composer — visible after pressing n.
+          Rectangle {
+            visible: root.composing
+            width: parent.width
+            height: Style.space(48)
+            radius: Style.cornerRadius
+            color: root.selectedBackground
+            border.width: 1
+            border.color: root.accent
+            z: 35
+
+            Row {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(12)
+              anchors.rightMargin: Style.space(12)
+              spacing: Style.space(10)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "+"
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Item {
+                width: parent.width - Style.space(28)
+                height: parent.height
+
+                Text {
+                  anchors.fill: parent
+                  verticalAlignment: Text.AlignVCenter
+                  visible: composerInput.text === ""
+                  text: "New task on this day"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                TextInput {
+                  id: composerInput
+                  anchors.fill: parent
+                  verticalAlignment: TextInput.AlignVCenter
+                  text: root.composerText
+                  color: root.selectedText
+                  selectedTextColor: root.background
+                  selectionColor: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                  clip: true
+                  onTextChanged: root.composerText = text
+                  onAccepted: root.submitComposer()
+                }
+              }
+            }
           }
         }
 
@@ -558,7 +696,7 @@ Item {
                 width: parent.width
                 text: (!root.signedIn && !root.demoMode)
                       ? "← / →   previous / next day\ny       toggle Not Yet drawer\nt       jump to today\na       sign in (opens terminal)\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
-                      : "← / →   previous / next day\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
+                      : "← / →   previous / next day\nn       add a task on this day\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body

@@ -42,6 +42,17 @@ Item {
     cursorActive = false
   }
 
+  // After add/remove the list length changes — keep the highlight valid.
+  onTasksChanged: {
+    if (!tasks || tasks.length === 0) {
+      selectedIndex = 0
+      cursorActive = false
+      return
+    }
+    if (selectedIndex >= tasks.length)
+      selectedIndex = tasks.length - 1
+  }
+
   Column {
     anchors.fill: parent
     spacing: Style.space(10)

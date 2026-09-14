@@ -257,6 +257,75 @@ cmd_not_yet() {
   print_or_json "$code" "$body"
 }
 
+# Add a Focus-column task on a date (today if omitted).
+# Usage: peponi add [YYYY-MM-DD] TITLE...
+cmd_add() {
+  need_cmd curl
+  need_cmd python3
+  local date title
+  if [[ "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    date="$1"
+    shift
+  else
+    date="$(date +%F)"
+  fi
+  title="$*"
+  title="${title#"${title%%[![:space:]]*}"}"
+  title="${title%"${title##*[![:space:]]}"}"
+  [[ -n "$title" ]] || die "usage: peponi add [YYYY-MM-DD] TITLE"
+
+  local payload
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+
+  local resp code body
+  resp="$(api_curl POST "/api/v1/days/$date/tasks" --auth --data "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    [[ "$code" =~ ^2 ]] || exit 1
+    return
+  fi
+  if [[ "$code" =~ ^2 ]]; then
+    python3 -c 'import json,sys
+d=json.load(sys.stdin)
+t=d.get("task") or {}
+print("Added \"%s\" on %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("id") or "?"))
+' "$date" <<<"$body"
+  else
+    printf 'peponi: add failed (HTTP %s)\n' "$code" >&2
+    printf '%s\n' "$body" | (command -v jq >/dev/null && jq . || cat) >&2
+    exit 1
+  fi
+}
+
+# Delete a task by id (from peponi day JSON).
+# Usage: peponi rm ID
+cmd_rm() {
+  need_cmd curl
+  need_cmd python3
+  local id="${1:-}"
+  [[ -n "$id" ]] || die "usage: peponi rm ID"
+  [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from peponi day --json)"
+
+  local resp code body
+  resp="$(api_curl DELETE "/api/v1/todos/$id" --auth)"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    [[ "$code" =~ ^2 ]] || exit 1
+    return
+  fi
+  if [[ "$code" =~ ^2 ]]; then
+    printf 'Removed task %s\n' "$id"
+  else
+    printf 'peponi: rm failed (HTTP %s)\n' "$code" >&2
+    printf '%s\n' "$body" | (command -v jq >/dev/null && jq . || cat) >&2
+    exit 1
+  fi
+}
+
 usage() {
   cat <<'EOF'
 peponi — Omarchy / desktop helper for paid peponi.to accounts
@@ -267,6 +336,8 @@ Usage:
   peponi auth status [--json]
   peponi day YYYY-MM-DD [--json]
   peponi not-yet [--json]
+  peponi add [YYYY-MM-DD] TITLE [--json]
+  peponi rm ID [--json]
   peponi help
 
 Environment:
@@ -300,6 +371,14 @@ main() {
       ;;
     day) cmd_day "${args[0]:-}" ;;
     not-yet|not_yet) cmd_not_yet ;;
+    add)
+      if ((${#args[@]} > 0)); then
+        cmd_add "${args[@]}"
+      else
+        cmd_add
+      fi
+      ;;
+    rm|remove|delete) cmd_rm "${args[0]:-}" ;;
     help|-h|--help) usage ;;
     *) usage; exit 1 ;;
   esac
