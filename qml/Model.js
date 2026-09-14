@@ -139,7 +139,11 @@ function authStatusCommand() {
 // ---------------------------------------------------------------------------
 var demoByWeekday = {
   0: [{ title: "Weekly review", done: false, list: "Planning" }],
-  1: [{ title: "Ship Omarchy overlay", done: false, list: "Work" }, { title: "Gym", done: true, list: "Health" }],
+  1: [
+    { title: "Ship Omarchy overlay", done: false, list: "Work" },
+    { title: "Write the plugin README", done: false, list: "Work" },
+    { title: "Gym", done: true, list: "Health" }
+  ],
   2: [{ title: "Write docs", done: false, list: "Work" }],
   3: [{ title: "Mid-week check-in", done: false, list: "Work" }],
   4: [{ title: "Friday demo", done: false, list: "Work" }],
@@ -149,7 +153,8 @@ var demoByWeekday = {
 
 var demoNotYet = [
   { title: "Book dentist", list: "Personal" },
-  { title: "Rewrite onboarding", list: "Work" }
+  { title: "Rewrite onboarding", list: "Work" },
+  { title: "Reply to design notes", list: "Work" }
 ]
 
 function tasksForDate(date) {

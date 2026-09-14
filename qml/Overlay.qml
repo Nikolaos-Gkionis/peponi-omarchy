@@ -166,8 +166,18 @@ Item {
   function syncFromService() {
     if (!root.service) return false
     root.signedIn = root.service.authenticated === true || root.demoMode
+    if (root.demoMode) {
+      root.authBanner = ""
+      root.dayTasks = root.service.dayTasks && root.service.dayTasks.length
+        ? root.service.dayTasks
+        : Model.tasksForDate(root.selectedDate)
+      root.notYetItems = root.service.notYetItems && root.service.notYetItems.length
+        ? root.service.notYetItems
+        : Model.notYetItems()
+      return true
+    }
     root.authBanner = root.service.lastError || root.service.statusMessage || ""
-    if (root.signedIn || root.demoMode) {
+    if (root.signedIn) {
       root.dayTasks = root.service.dayTasks || []
       root.notYetItems = root.service.notYetItems || []
     } else {

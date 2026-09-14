@@ -4,7 +4,7 @@ Keyboard-first **one-day** focus overlay for **paid** [peponi.to](https://peponi
 
 Browse today with `←` / `→`, open **Not Yet** with `y`, jump to today with `t`. Data comes from peponi.to through a small local `peponi` CLI.
 
-![Peponi One Day on Omarchy](docs/screenshot.png)
+![Peponi One Day overlay](preview.png)
 
 | | |
 |---|---|
@@ -93,6 +93,7 @@ omarchy plugin remove peponi.one-day --yes
 
 ```
 manifest.json          # Omarchy plugin contract (repo root)
+preview.png            # Plugin directory listing screenshot
 qml/                   # Overlay, Service, BarWidget, …
 bin/peponi             # CLI
 scripts/install.sh     # Dev symlink install

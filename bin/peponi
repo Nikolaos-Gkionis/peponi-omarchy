@@ -131,6 +131,12 @@ cmd_auth_login() {
 
   local email="${PEPONI_EMAIL:-}" password="${PEPONI_PASSWORD:-}"
   local url
+  # A leftover credentials.json from local testing used to steal this URL
+  # (e.g. http://127.0.0.1:3000). Login itself should hit production unless
+  # the user explicitly set PEPONI_BASE_URL.
+  if [[ -z "${PEPONI_BASE_URL:-}" ]]; then
+    PEPONI_BASE_URL="$DEFAULT_BASE_URL"
+  fi
   url="$(base_url)"
 
   if [[ -z "$email" ]]; then

@@ -107,7 +107,7 @@ Item {
     if (exitCode !== 0) {
       authenticated = false
       userEmail = ""
-      var detail = String(stderrText || "").trim()
+      var detail = String(stderrText || "").trim().split("\n")[0]
       lastError = detail !== ""
         ? detail
         : ("Not signed in. Run: peponi auth login (exit " + exitCode + ")")
