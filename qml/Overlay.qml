@@ -11,7 +11,7 @@ import "Model.js" as Model
 //   Overlay.qml     = window + keys + day state
 //   DayView.qml     = task list for selectedDate
 //   BottomDrawer.qml = Not Yet slide-up (same window, not a 2nd layer-shell)
-//   Service.qml     = peponi CLI auth + day / Not Yet fetch
+//   Service.qml     = peponi CLI (local store on this machine, or paid peponi.to)
 Item {
   id: root
 
@@ -34,6 +34,7 @@ Item {
   property var notYetItems: []
   property string authBanner: ""
   property bool signedIn: false
+  property string dataMode: ""   // "local" | "cloud" | "demo" | ""
 
   readonly property bool demoMode: Quickshell.env("PEPONI_DEMO") === "1"
 
@@ -118,7 +119,7 @@ Item {
     if (root.drawerOpen) {
       if (root.service && typeof root.service.loadNotYet === "function")
         root.service.loadNotYet()
-      drawer.resetCursor()
+      drawer.ensureCursor()
     } else {
       dayView.resetCursor()
     }
@@ -159,6 +160,16 @@ Item {
     })
   }
 
+  // Local mode does not need a terminal — the CLI writes a JSON file and
+  // the overlay can keep focus.
+  function enableLocalMode() {
+    if (root.service && typeof root.service.enableLocalMode === "function") {
+      root.service.enableLocalMode()
+      return
+    }
+    startPeponi(authLocalFallback, ["auth", "local", "--json"])
+  }
+
   function startPeponi(proc, args) {
     var cmd = ["/usr/bin/bash", peponiBin()]
     for (var i = 0; i < args.length; i++) cmd.push(args[i])
@@ -170,6 +181,7 @@ Item {
   function syncFromService() {
     if (!root.service) return false
     root.signedIn = root.service.authenticated === true || root.demoMode
+    root.dataMode = root.demoMode ? "demo" : (root.service.dataMode || "")
     if (root.demoMode) {
       root.authBanner = ""
       root.dayTasks = root.service.dayTasks && root.service.dayTasks.length
@@ -182,8 +194,8 @@ Item {
     }
     root.authBanner = root.service.lastError || root.service.statusMessage || ""
     if (root.signedIn) {
-      root.dayTasks = root.service.dayTasks || []
-      root.notYetItems = root.service.notYetItems || []
+      root.dayTasks = Model.copyRows(root.service.dayTasks)
+      root.notYetItems = Model.copyRows(root.service.notYetItems)
     } else {
       root.dayTasks = []
       root.notYetItems = []
@@ -194,6 +206,7 @@ Item {
   function reloadDay() {
     if (root.demoMode && !root.service) {
       root.signedIn = true
+      root.dataMode = "demo"
       root.authBanner = "Demo mode (PEPONI_DEMO=1)"
       root.dayTasks = Model.tasksForDate(root.selectedDate)
       root.notYetItems = Model.notYetItems()
@@ -239,9 +252,9 @@ Item {
     root.dismiss()
   }
 
-  // One-line "new task" field at the bottom of the card.
+  // One-line "new task" field. Same key (n) on the day or in Not Yet.
   function openComposer() {
-    if ((!root.signedIn && !root.demoMode) || root.drawerOpen || root.helpOpen)
+    if ((!root.signedIn && !root.demoMode) || root.helpOpen)
       return
     root.composing = true
     root.composerText = ""
@@ -260,16 +273,38 @@ Item {
 
   function submitComposer() {
     var title = String(root.composerText || "").trim()
+    var toNotYet = root.drawerOpen
     root.cancelComposer()
     if (title === "") return
-    if (root.service && typeof root.service.addTask === "function")
+    if (!root.service) return
+    // Drawer open → always Not Yet. Never fall through to the day list.
+    if (toNotYet) {
+      if (typeof root.service.addNotYet === "function")
+        root.service.addNotYet(title)
+      return
+    }
+    if (typeof root.service.addTask === "function")
       root.service.addTask(root.selectedDate, title)
   }
 
-  // Delete the highlighted day row (↑ / ↓ first). Not "mark complete".
+  // Delete the highlighted row (↑ / ↓ first). Day list, or Not Yet if the drawer is open.
   function removeSelectedTask() {
-    if ((!root.signedIn && !root.demoMode) || root.drawerOpen || root.composing || root.helpOpen)
+    if ((!root.signedIn && !root.demoMode) || root.composing || root.helpOpen)
       return
+    if (root.drawerOpen) {
+      if (!drawer.cursorActive || !drawer.items || drawer.items.length === 0) {
+        root.authBanner = "Highlight a Not Yet task with ↑ / ↓, then Delete"
+        return
+      }
+      var ny = drawer.items[drawer.selectedIndex]
+      if (!ny || ny.id === undefined || ny.id === null || String(ny.id) === "") {
+        root.authBanner = "This task has no id — reload and try again"
+        return
+      }
+      if (root.service && typeof root.service.removeTask === "function")
+        root.service.removeTask(ny.id)
+      return
+    }
     if (!dayView.cursorActive || !dayView.tasks || dayView.tasks.length === 0) {
       root.authBanner = "Highlight a task with ↑ / ↓, then Delete"
       return
@@ -283,6 +318,28 @@ Item {
       root.service.removeTask(task.id)
   }
 
+  // a in the Not Yet drawer: put the highlighted inbox task on today.
+  function sendNotYetToToday() {
+    if (!root.drawerOpen || root.composing || root.helpOpen)
+      return
+    if (!drawer.cursorActive || !drawer.items || drawer.items.length === 0) {
+      root.authBanner = "Highlight a Not Yet task with ↑ / ↓, then a"
+      return
+    }
+    var ny = drawer.items[drawer.selectedIndex]
+    if (!ny || ny.id === undefined || ny.id === null || String(ny.id) === "") {
+      root.authBanner = "This task has no id — reload and try again"
+      return
+    }
+    // Jump the day view to today so the moved task is visible when it lands.
+    root.today = Model.startOfToday()
+    root.selectedDate = root.today
+    if (root.service)
+      root.service.selectedDate = root.today
+    if (root.service && typeof root.service.scheduleNotYetToToday === "function")
+      root.service.scheduleNotYetToToday(ny.id)
+  }
+
   Connections {
     target: root.service
     function onDayTasksChanged() { root.syncFromService() }
@@ -290,6 +347,7 @@ Item {
     function onAuthenticatedChanged() { root.syncFromService() }
     function onLastErrorChanged() { root.syncFromService() }
     function onStatusMessageChanged() { root.syncFromService() }
+    function onDataModeChanged() { root.syncFromService() }
   }
 
   Component.onCompleted: {
@@ -315,7 +373,7 @@ Item {
       } else {
         root.signedIn = false
         root.dayTasks = []
-        root.authBanner = "Not signed in. Run peponi auth login (or scripts/install.sh)."
+        root.authBanner = "Not set up. Press l to use locally, or a to sign in."
       }
     }
   }
@@ -332,6 +390,25 @@ Item {
         root.notYetItems = Model.notYetFromJson(notYetFallbackStdout.text)
       else
         root.notYetItems = []
+    }
+  }
+
+  Process {
+    id: authLocalFallback
+    command: []
+    stdout: StdioCollector {
+      id: authLocalFallbackStdout
+      waitForEnd: true
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        root.signedIn = true
+        root.dataMode = "local"
+        root.authBanner = "Using local data on this machine"
+        root.reloadDay()
+      } else {
+        root.authBanner = "Could not start local mode"
+      }
     }
   }
 
@@ -367,7 +444,12 @@ Item {
       padding: root.contentMargin
 
       // Keep clicks on the card from dismissing via the scrim MouseArea.
-      MouseArea { anchors.fill: parent; onClicked: {} }
+      MouseArea {
+        anchors.fill: parent
+        onClicked: {
+          if (keyCatcher) keyCatcher.forceActiveFocus()
+        }
+      }
 
       Item {
         id: keyCatcher
@@ -425,13 +507,13 @@ Item {
             return
           }
 
-          if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && !root.drawerOpen) {
+          if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
             root.removeSelectedTask()
             event.accepted = true
             return
           }
 
-          // Letter shortcuts (Peponi GUI cues)
+          // Letter shortcuts — same keys on the day and in the Y drawer
           var t = event.text
           if (t === "y" || t === "Y") {
             root.toggleDrawer()
@@ -443,8 +525,18 @@ Item {
             event.accepted = true
             return
           }
-          if ((t === "n" || t === "N") && (root.signedIn || root.demoMode) && !root.drawerOpen) {
+          if ((t === "n" || t === "N") && (root.signedIn || root.demoMode)) {
             root.openComposer()
+            event.accepted = true
+            return
+          }
+          if ((t === "a" || t === "A") && root.drawerOpen) {
+            root.sendNotYetToToday()
+            event.accepted = true
+            return
+          }
+          if ((t === "l" || t === "L") && !root.signedIn && !root.demoMode) {
+            root.enableLocalMode()
             event.accepted = true
             return
           }
@@ -495,6 +587,14 @@ Item {
               font.bold: true
             }
 
+            Text {
+              visible: root.signedIn && root.dataMode === "local"
+              text: "Local · this machine"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
             Row {
               spacing: Style.space(14)
 
@@ -517,12 +617,14 @@ Item {
             }
 
             Text {
-              // Sign-in chord is only useful when logged out.
+              // Drawer open: a = send to today. Drawer closed + not set up: a = sign in.
               text: root.composing
                     ? "enter save  ·  esc cancel"
-                    : ((!root.signedIn && !root.demoMode)
-                      ? "← → day  ·  y not yet  ·  t today  ·  a sign in  ·  esc close  ·  ?"
-                      : "← → day  ·  n add  ·  del remove  ·  y not yet  ·  t today  ·  esc close  ·  ?")
+                    : (root.drawerOpen
+                      ? "n add  ·  a today  ·  del remove  ·  ↑ ↓  ·  y/esc close  ·  ?"
+                      : ((!root.signedIn && !root.demoMode)
+                        ? "← → day  ·  l local  ·  a sign in  ·  y not yet  ·  t today  ·  esc close  ·  ?"
+                        : "← → day  ·  n add  ·  del remove  ·  y not yet  ·  t today  ·  esc close  ·  ?"))
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -538,23 +640,45 @@ Item {
               font.pixelSize: Style.font.caption
             }
 
-            Text {
-              id: signInLink
+            Column {
               visible: !root.signedIn && !root.demoMode
               width: parent.width
-              wrapMode: Text.Wrap
-              text: "Sign in — opens your terminal and runs peponi auth login"
-              color: root.accent
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              font.underline: true
+              spacing: Style.space(6)
 
-              MouseArea {
-                anchors.fill: parent
-                cursorShape: Qt.PointingHandCursor
-                hoverEnabled: true
-                z: 40
-                onClicked: root.openAuthLogin()
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Use locally (l) — tasks stay on this Omarchy machine, no account needed"
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.underline: true
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  hoverEnabled: true
+                  z: 40
+                  onClicked: root.enableLocalMode()
+                }
+              }
+
+              Text {
+                width: parent.width
+                wrapMode: Text.Wrap
+                text: "Sign in (a) — paid peponi.to license, copies your tasks onto this machine"
+                color: root.accent
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.underline: true
+
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  hoverEnabled: true
+                  z: 40
+                  onClicked: root.openAuthLogin()
+                }
               }
             }
           }
@@ -579,7 +703,7 @@ Item {
             fontFamily: root.fontFamily
           }
 
-          // New-task composer — visible after pressing n.
+          // New-task composer — n on the day or in the Not Yet drawer.
           Rectangle {
             visible: root.composing
             width: parent.width
@@ -588,7 +712,7 @@ Item {
             color: root.selectedBackground
             border.width: 1
             border.color: root.accent
-            z: 35
+            z: 50
 
             Row {
               anchors.fill: parent
@@ -613,7 +737,7 @@ Item {
                   anchors.fill: parent
                   verticalAlignment: Text.AlignVCenter
                   visible: composerInput.text === ""
-                  text: "New task on this day"
+                  text: root.drawerOpen ? "New task in Not Yet" : "New task on this day"
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -632,6 +756,7 @@ Item {
                   clip: true
                   onTextChanged: root.composerText = text
                   onAccepted: root.submitComposer()
+                  Keys.onEscapePressed: root.cancelComposer()
                 }
               }
             }
@@ -653,6 +778,9 @@ Item {
           selectedBackground: root.selectedBackground
           selectedText: root.selectedText
           fontFamily: root.fontFamily
+          onRequestFocus: {
+            if (keyCatcher) keyCatcher.forceActiveFocus()
+          }
         }
 
         // Lightweight shortcuts help overlay inside the card.
@@ -694,9 +822,11 @@ Item {
 
               Text {
                 width: parent.width
-                text: (!root.signedIn && !root.demoMode)
-                      ? "← / →   previous / next day\ny       toggle Not Yet drawer\nt       jump to today\na       sign in (opens terminal)\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
-                      : "← / →   previous / next day\nn       add a task on this day\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
+                text: root.drawerOpen
+                      ? "n       add a Not Yet task\na       move highlighted task to today\nDelete  remove highlighted Not Yet task\n↑ / ↓   move in Not Yet\ny / Esc close the drawer\n?       this help"
+                      : ((!root.signedIn && !root.demoMode)
+                        ? "← / →   previous / next day\nl       use locally on this machine\na       sign in with peponi.to\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
+                        : "← / →   previous / next day\nn       add a task on this day\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body

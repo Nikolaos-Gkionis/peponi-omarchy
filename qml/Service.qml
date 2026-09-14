@@ -5,7 +5,9 @@ import qs.Commons
 import "Model.js" as Model
 
 // Shared engine for every bar / overlay instance.
-// Talks to the peponi CLI (credentials in ~/.config/peponi/).
+// Talks to the peponi CLI. Two modes:
+//   local — tasks in ~/.local/share/peponi/ (no account)
+//   cloud — paid peponi.to login (~/.config/peponi/credentials.json)
 Item {
   id: root
 
@@ -20,11 +22,14 @@ Item {
   property string lastError: ""
   property string statusMessage: ""
   property string userEmail: ""
+  property string dataMode: ""   // "local" | "cloud" | "demo" | ""
   property string appTitle: "Peponi"
   property string notYetTitle: "Not Yet"
   property int openTaskCount: 0
   property int authWatchTicks: 0
   property bool mutating: false
+  property bool pendingNotYetAdd: false
+  property bool pendingNotYetToday: false
 
   property date selectedDate: Model.startOfToday()
   property var dayTasks: []
@@ -53,6 +58,7 @@ Item {
   function refreshAuth() {
     if (demoMode) {
       authenticated = true
+      dataMode = "demo"
       statusMessage = "Demo mode (PEPONI_DEMO=1)"
       lastError = ""
       return
@@ -81,10 +87,6 @@ Item {
   function loadNotYet() {
     if (demoMode) {
       notYetItems = Model.notYetItems()
-      return
-    }
-    if (!authenticated) {
-      notYetItems = []
       return
     }
     loadingNotYet = true
@@ -117,6 +119,8 @@ Item {
     }
     if (!authenticated) return
     mutating = true
+    pendingNotYetAdd = false
+    pendingNotYetToday = false
     lastError = ""
     startPeponi(mutateProcess, ["add", Model.keyForDate(when), title, "--json"])
   }
@@ -131,25 +135,129 @@ Item {
       }
       dayTasks = kept
       openTaskCount = Model.openCount(dayTasks)
+      var keptNy = []
+      for (var j = 0; j < notYetItems.length; j++) {
+        if (String(notYetItems[j].id) !== String(id)) keptNy.push(notYetItems[j])
+      }
+      notYetItems = keptNy
       lastError = ""
       return
     }
     if (!authenticated) return
     mutating = true
+    pendingNotYetAdd = false
+    pendingNotYetToday = false
     lastError = ""
     startPeponi(mutateProcess, ["rm", String(id), "--json"])
   }
 
   function applyMutate(stdoutText, exitCode, stderrText) {
     mutating = false
+    var wasNotYet = pendingNotYetAdd
+    var wasToday = pendingNotYetToday
+    pendingNotYetAdd = false
+    pendingNotYetToday = false
     if (exitCode !== 0) {
       var detail = String(stderrText || stdoutText || "").trim().split("\n")[0]
       lastError = detail !== "" ? detail : "Could not save task"
       statusMessage = lastError
+      if (wasToday) {
+        loadDay(selectedDate)
+        loadNotYet()
+      }
       return
     }
     lastError = ""
+    if (wasNotYet) {
+      var data = ({})
+      try { data = JSON.parse(stdoutText || "{}") } catch (e) { data = ({}) }
+      replacePendingNotYet(data.task || {})
+      return
+    }
     loadDay(selectedDate)
+    loadNotYet()
+  }
+
+  function dropPendingNotYet() {
+    var kept = []
+    for (var i = 0; i < notYetItems.length; i++) {
+      if (String(notYetItems[i].id).indexOf("pending-") !== 0)
+        kept.push(notYetItems[i])
+    }
+    notYetItems = kept
+  }
+
+  function replacePendingNotYet(task) {
+    var row = Model.notYetRow(task, "Inbox")
+    var next = []
+    var replaced = false
+    for (var i = 0; i < notYetItems.length; i++) {
+      if (!replaced && String(notYetItems[i].id).indexOf("pending-") === 0) {
+        if (row.title !== "")
+          next.push(row)
+        replaced = true
+      } else {
+        next.push(notYetItems[i])
+      }
+    }
+    if (!replaced && row.title !== "")
+      next.push(row)
+    notYetItems = next
+  }
+
+  // Undated Inbox task (Not Yet drawer). Same composer as the day, different CLI.
+  function addNotYet(title) {
+    title = String(title || "").trim()
+    if (title === "") return
+    // Show the row immediately so the drawer never looks empty after n.
+    var copy = Model.copyRows(notYetItems)
+    copy.push({
+      id: "pending-" + Date.now(),
+      title: title,
+      list: "Inbox",
+      done: false
+    })
+    notYetItems = copy
+    lastError = ""
+    if (demoMode) return
+    mutating = true
+    pendingNotYetAdd = true
+    pendingNotYetToday = false
+    startPeponi(mutateProcess, ["not-yet", "add", title, "--json"])
+  }
+
+  // Move a Not Yet row onto today (key: a while the drawer is open).
+  function scheduleNotYetToToday(id) {
+    if (id === undefined || id === null || String(id) === "") return
+    var moved = null
+    var kept = []
+    for (var i = 0; i < notYetItems.length; i++) {
+      if (String(notYetItems[i].id) === String(id))
+        moved = notYetItems[i]
+      else
+        kept.push(notYetItems[i])
+    }
+    if (!moved) return
+    notYetItems = kept
+    lastError = ""
+    selectedDate = Model.startOfToday()
+    if (demoMode) {
+      var copy = Model.copyRows(Model.tasksForDate(selectedDate))
+      copy.push({
+        id: moved.id,
+        title: moved.title,
+        done: false,
+        list: "",
+        is_visual_break: false
+      })
+      dayTasks = copy
+      openTaskCount = Model.openCount(dayTasks)
+      return
+    }
+    mutating = true
+    pendingNotYetAdd = false
+    pendingNotYetToday = true
+    startPeponi(mutateProcess, ["not-yet", "today", String(id), "--json"])
   }
 
   // Open the user's default terminal and run `peponi auth login`.
@@ -160,15 +268,24 @@ Item {
     authWatch.restart()
   }
 
+  // Local mode is one CLI call — no terminal, no password.
+  function enableLocalMode() {
+    probing = true
+    lastError = ""
+    statusMessage = "Starting local mode…"
+    startPeponi(authProcess, ["auth", "local", "--json"])
+  }
+
   function applyAuth(stdoutText, exitCode, stderrText) {
     probing = false
     if (exitCode !== 0) {
       authenticated = false
+      dataMode = ""
       userEmail = ""
       var detail = String(stderrText || "").trim().split("\n")[0]
       lastError = detail !== ""
         ? detail
-        : ("Not signed in. Run: peponi auth login (exit " + exitCode + ")")
+        : ("Not set up. Press l for local, or a to sign in (exit " + exitCode + ")")
       statusMessage = lastError
       dayTasks = []
       notYetItems = []
@@ -178,15 +295,28 @@ Item {
     try {
       var data = JSON.parse(stdoutText || "{}")
       authenticated = data.authenticated === true
+      if (data.mode === "local" || data.mode === "cloud" || data.mode === "demo")
+        dataMode = data.mode
+      else
+        dataMode = authenticated ? "cloud" : ""
       if (data.user) {
         userEmail = data.user.email || ""
         appTitle = data.user.app_title || "Peponi"
         notYetTitle = data.user.not_yet_panel_title || "Not Yet"
       }
-      statusMessage = authenticated ? ("Signed in as " + userEmail) : "Not signed in"
-      lastError = authenticated ? "" : statusMessage
+      if (!authenticated) {
+        statusMessage = ""
+        lastError = ""
+      } else if (dataMode === "local") {
+        statusMessage = "Using local data on this machine"
+        lastError = ""
+      } else {
+        statusMessage = userEmail !== "" ? ("Signed in as " + userEmail) : "Signed in"
+        lastError = ""
+      }
     } catch (e) {
       authenticated = false
+      dataMode = ""
       lastError = "Could not read peponi auth status"
       statusMessage = lastError
     }
@@ -200,7 +330,7 @@ Item {
   function applyDay(stdoutText, exitCode) {
     loadingDay = false
     if (exitCode !== 0) {
-      lastError = "Failed to load day (is peponi signed in?)"
+      lastError = "Failed to load this day"
       dayTasks = []
       openTaskCount = 0
       return
@@ -213,14 +343,17 @@ Item {
   function applyNotYet(stdoutText, exitCode) {
     loadingNotYet = false
     if (exitCode !== 0) {
-      notYetItems = []
+      // Keep whatever is already on screen (including a just-added row).
       return
     }
     try {
       var data = JSON.parse(stdoutText || "{}")
       if (data.title) notYetTitle = data.title
     } catch (e) {}
-    notYetItems = Model.notYetFromJson(stdoutText)
+    var parsed = Model.notYetFromJson(stdoutText)
+    // An empty parse after a successful fetch can wipe a just-added row.
+    if (parsed.length > 0)
+      notYetItems = parsed
   }
 
   Component.onCompleted: reloadAll()

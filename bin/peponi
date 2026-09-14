@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
-# peponi — desktop CLI for paid peponi.to accounts (Omarchy helper).
-# Credentials live in ~/.config/peponi/credentials.json (mode 0600).
+# peponi — desktop CLI for Omarchy (local store or paid peponi.to account).
+#
+# Two ways to use it:
+#   local  — tasks live on this machine (no account). peponi auth local
+#   cloud  — paid peponi.to login. peponi auth login
+#
+# Cloud credentials: ~/.config/peponi/credentials.json (mode 0600)
+# Mode flag:          ~/.config/peponi/config.json
+# Local tasks:        ~/.local/share/peponi/store.json
 # Override API host with PEPONI_BASE_URL (default https://peponi.to).
 
 set -euo pipefail
 
 PEPONI_CONFIG_DIR="${PEPONI_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/peponi}"
 PEPONI_CREDENTIALS="${PEPONI_CREDENTIALS:-$PEPONI_CONFIG_DIR/credentials.json}"
+PEPONI_CONFIG="${PEPONI_CONFIG:-$PEPONI_CONFIG_DIR/config.json}"
+PEPONI_DATA_DIR="${PEPONI_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/peponi}"
+PEPONI_STORE="${PEPONI_STORE:-$PEPONI_DATA_DIR/store.json}"
 DEFAULT_BASE_URL="https://peponi.to"
 
 json_mode=0
@@ -79,6 +89,315 @@ clear_credentials() {
   rm -f "$PEPONI_CREDENTIALS"
 }
 
+# Remember local vs cloud. "none" clears the flag so the overlay shows
+# the choose-a-mode screen again. Local task files are not deleted.
+save_mode() {
+  local mode="$1"
+  mkdir -p "$PEPONI_CONFIG_DIR"
+  umask 077
+  python3 - "$PEPONI_CONFIG" "$mode" <<'PY'
+import json, sys
+path, mode = sys.argv[1], sys.argv[2]
+data = {}
+try:
+    with open(path) as f:
+        data = json.load(f) or {}
+except Exception:
+    data = {}
+if mode in ("", "none"):
+    data.pop("mode", None)
+else:
+    data["mode"] = mode
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+  chmod 600 "$PEPONI_CONFIG"
+}
+
+read_mode() {
+  python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("mode") or "")
+except Exception:
+    print("")
+' "$PEPONI_CONFIG"
+}
+
+# local wins even if leftover cloud credentials exist.
+# credentials with no local flag → cloud (so existing paid users keep working).
+effective_mode() {
+  local m
+  m="$(read_mode)"
+  if [[ "$m" == "local" ]]; then
+    printf 'local\n'
+    return
+  fi
+  if [[ -f "$PEPONI_CREDENTIALS" ]]; then
+    printf 'cloud\n'
+    return
+  fi
+  printf 'none\n'
+}
+
+# Always keep a local JSON file so Not Yet can persist on Omarchy
+# even when peponi.to is unreachable or the write API is not deployed.
+ensure_store() {
+  store_op init >/dev/null
+}
+store_op() {
+  need_cmd python3
+  python3 - "$PEPONI_STORE" "$@" <<'PY'
+import json, os, sys
+from pathlib import Path
+
+store_path = Path(sys.argv[1])
+op = sys.argv[2]
+args = sys.argv[3:]
+
+
+def empty_store():
+    # next_id is a counter so every task gets a unique integer id
+    # (the overlay's Delete key needs that id).
+    return {"next_id": 1, "days": {}, "not_yet": []}
+
+
+def load():
+    if not store_path.exists():
+        return empty_store()
+    with open(store_path) as f:
+        data = json.load(f) or {}
+    data.setdefault("next_id", 1)
+    data.setdefault("days", {})
+    data.setdefault("not_yet", [])
+    return data
+
+
+def save(data):
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = store_path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    tmp.replace(store_path)
+    os.chmod(store_path, 0o600)
+
+
+def task_row(tid, title, completed=False, list_name=""):
+    return {
+        "id": tid,
+        "title": title,
+        "completed": bool(completed),
+        "list": list_name,
+        "is_visual_break": False,
+    }
+
+
+def same_id(task, tid):
+    try:
+        return int(task.get("id")) == int(tid)
+    except (TypeError, ValueError):
+        return str(task.get("id")) == str(tid)
+
+
+if op == "init":
+    if not store_path.exists():
+        save(empty_store())
+    print(json.dumps({"ok": True, "store": str(store_path)}))
+    raise SystemExit(0)
+
+if op == "day":
+    date = args[0]
+    data = load()
+    print(json.dumps({"date": date, "tasks": data["days"].get(date, [])}))
+    raise SystemExit(0)
+
+if op == "add":
+    date, title = args[0], args[1]
+    data = load()
+    tid = int(data["next_id"])
+    data["next_id"] = tid + 1
+    row = task_row(tid, title)
+    data["days"].setdefault(date, []).append(row)
+    save(data)
+    print(json.dumps({"ok": True, "task": row, "date": date}))
+    raise SystemExit(0)
+
+if op == "rm":
+    tid = args[0]
+    data = load()
+    found = False
+    for date, tasks in list(data["days"].items()):
+        kept = [t for t in tasks if not same_id(t, tid)]
+        if len(kept) != len(tasks):
+            found = True
+            data["days"][date] = kept
+    kept_ny = [t for t in data["not_yet"] if not same_id(t, tid)]
+    if len(kept_ny) != len(data["not_yet"]):
+        found = True
+        data["not_yet"] = kept_ny
+    if not found:
+        print(json.dumps({"ok": False, "error": "task not found"}))
+        raise SystemExit(1)
+    save(data)
+    print(json.dumps({"ok": True, "id": tid}))
+    raise SystemExit(0)
+
+if op == "add_not_yet":
+    title = args[0]
+    data = load()
+    tid = int(data["next_id"])
+    data["next_id"] = tid + 1
+    row = task_row(tid, title, list_name="Inbox")
+    data["not_yet"].append(row)
+    save(data)
+    print(json.dumps({"ok": True, "task": row}))
+    raise SystemExit(0)
+
+if op == "to_day":
+    # Move a Not Yet task onto a calendar day (same id).
+    tid, date = args[0], args[1]
+    data = load()
+    found = None
+    kept = []
+    for t in data["not_yet"]:
+        if same_id(t, tid):
+            found = t
+        else:
+            kept.append(t)
+    if found is None:
+        print(json.dumps({"ok": False, "error": "task not found"}))
+        raise SystemExit(1)
+    data["not_yet"] = kept
+    data["days"].setdefault(date, []).append(found)
+    save(data)
+    print(json.dumps({"ok": True, "task": found, "date": date}))
+    raise SystemExit(0)
+
+if op == "not_yet":
+    data = load()
+    print(json.dumps({
+        "title": "Not Yet",
+        "pages": [{"name": "Inbox", "todos": data["not_yet"]}],
+    }))
+    raise SystemExit(0)
+
+if op == "seed_not_yet":
+    # Copy website Not Yet into the local file once (empty inbox only).
+    src = Path(args[0]) if args else None
+    cloud = json.loads(src.read_text() if src and src.exists() else "{}")
+    data = load()
+    if data["not_yet"]:
+        print(json.dumps({
+            "title": "Not Yet",
+            "pages": [{"name": "Inbox", "todos": data["not_yet"]}],
+        }))
+        raise SystemExit(0)
+    for page in cloud.get("pages") or []:
+        list_name = str(page.get("name") or "Inbox")
+        for t in page.get("todos") or []:
+            if t.get("is_visual_break") is True:
+                continue
+            tid = int(data["next_id"])
+            data["next_id"] = tid + 1
+            data["not_yet"].append(task_row(
+                tid,
+                str(t.get("title") or ""),
+                bool(t.get("completed") or t.get("done")),
+                list_name,
+            ))
+    save(data)
+    print(json.dumps({
+        "title": cloud.get("title") or "Not Yet",
+        "pages": [{"name": "Inbox", "todos": data["not_yet"]}],
+    }))
+    raise SystemExit(0)
+
+if op == "import":
+    # Replace the local file with a peponi.to snapshot (paid sign-in / peponi pull).
+    src = Path(args[0])
+    payload = json.loads(src.read_text())
+    days_in = payload.get("days") or {}
+    not_yet_in = payload.get("not_yet") or []
+    max_id = 0
+    pending = []
+
+    def take_id(item):
+        global max_id
+        try:
+            n = int(item.get("id"))
+            if n > max_id:
+                max_id = n
+            return n
+        except (TypeError, ValueError):
+            return None
+
+    for date, tasks in days_in.items():
+        for t in tasks or []:
+            pending.append(("day", str(date), t, take_id(t)))
+    for t in not_yet_in:
+        pending.append(("ny", None, t, take_id(t)))
+
+    next_id = max_id + 1
+    rebuilt_days = {str(d): [] for d in days_in.keys()}
+    rebuilt_ny = []
+    for kind, date, item, n in pending:
+        tid = n
+        if tid is None:
+            tid = next_id
+            next_id += 1
+        row = task_row(
+            tid,
+            str(item.get("title") or ""),
+            bool(item.get("completed") or item.get("done")),
+            str(item.get("list") or ""),
+        )
+        if kind == "day":
+            rebuilt_days.setdefault(date, []).append(row)
+        else:
+            rebuilt_ny.append(row)
+
+    data = empty_store()
+    data["days"] = rebuilt_days
+    data["not_yet"] = rebuilt_ny
+    data["next_id"] = next_id
+    save(data)
+    print(json.dumps({
+        "ok": True,
+        "store": str(store_path),
+        "days": len(rebuilt_days),
+        "tasks": sum(len(v) for v in rebuilt_days.values()) + len(rebuilt_ny),
+    }))
+    raise SystemExit(0)
+
+print(json.dumps({"ok": False, "error": "unknown local store op"}))
+raise SystemExit(1)
+PY
+}
+
+local_status_json() {
+  python3 - "$PEPONI_STORE" "$PEPONI_CREDENTIALS" <<'PY'
+import json, os, sys
+store, creds_path = sys.argv[1], sys.argv[2]
+email = "this machine"
+try:
+    email = json.load(open(creds_path)).get("email") or email
+except Exception:
+    pass
+print(json.dumps({
+    "authenticated": True,
+    "mode": "local",
+    "user": {
+        "email": email,
+        "app_title": "Peponi",
+        "not_yet_panel_title": "Not Yet",
+    },
+    "store": store,
+}))
+PY
+}
+
 api_curl() {
   local method="$1" path="$2"
   shift 2
@@ -125,9 +444,32 @@ print_or_json() {
   [[ "$code" =~ ^2 ]] || exit 1
 }
 
+cmd_auth_local() {
+  need_cmd python3
+  save_mode local
+  store_op init >/dev/null
+  if [[ "$json_mode" -eq 1 ]]; then
+    local_status_json
+  else
+    printf 'Using local data on this machine (no peponi.to account).\n'
+    printf 'Tasks are stored in %s\n' "$PEPONI_STORE"
+    printf 'To sync with peponi.to later, run: peponi auth login\n'
+  fi
+}
+
 cmd_auth_login() {
   need_cmd curl
   need_cmd python3
+
+  # Default: prove you paid, copy tasks onto this machine, then work locally.
+  # --cloud keeps talking to peponi.to (that means we host the todo list).
+  local live_cloud=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --cloud|--live) live_cloud=1 ;;
+    esac
+  done
 
   local email="${PEPONI_EMAIL:-}" password="${PEPONI_PASSWORD:-}"
   local url
@@ -181,51 +523,151 @@ cmd_auth_login() {
   expires="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("expires_at") or "")' <<<"$body")"
   save_credentials "$token" "$email" "$url" "$expires"
 
+  local mode="cloud"
+  local pulled=0
+  if [[ "$live_cloud" -eq 0 ]]; then
+    if cmd_pull_snapshot; then
+      save_mode local
+      mode="local"
+      pulled=1
+    else
+      # Older peponi.to without /api/v1/export — keep live API so paid login still works.
+      save_mode cloud
+      mode="cloud"
+    fi
+  else
+    save_mode cloud
+  fi
+
   if [[ "$json_mode" -eq 1 ]]; then
-    python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["credentials"]="saved"; print(json.dumps(d))' <<<"$body"
+    python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["mode"]=sys.argv[1]; d["pulled"]=sys.argv[2]=="1"; d["credentials"]="saved"; print(json.dumps(d))' "$mode" "$pulled" <<<"$body"
   else
     printf 'Signed in as %s (%s)\n' "$email" "$url"
-    printf 'Credentials saved to %s\n' "$PEPONI_CREDENTIALS"
+    printf 'License saved to %s\n' "$PEPONI_CREDENTIALS"
+    if [[ "$mode" == "local" ]]; then
+      printf 'Copied your peponi.to tasks onto this machine.\n'
+      printf 'New work stays in %s — peponi.to is not used as a live database.\n' "$PEPONI_STORE"
+      printf 'Refresh the copy later with: peponi pull\n'
+    else
+      printf 'Live cloud mode — tasks stay on peponi.to while this account exists.\n'
+      printf 'To copy onto this machine instead: peponi pull && peponi auth local\n'
+    fi
+  fi
+}
+
+# Copy a snapshot from peponi.to into the local JSON file.
+# Used by paid login (default) and by `peponi pull`.
+# Returns 1 if the export endpoint is missing or auth fails — caller decides.
+cmd_pull_snapshot() {
+  need_cmd curl
+  need_cmd python3
+  [[ -f "$PEPONI_CREDENTIALS" ]] || return 1
+  local url tmp code
+  url="$(base_url)/api/v1/export"
+  tmp="$(mktemp)"
+  code="$(curl -sS -o "$tmp" -w '%{http_code}' \
+    -H "Accept: application/json" \
+    -H "Authorization: Bearer $(read_token)" \
+    "$url")" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if [[ "$code" != "200" ]]; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if store_op import "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+cmd_pull() {
+  if cmd_pull_snapshot; then
+    save_mode local
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '{"ok":true,"mode":"local","store":%s}\n' "$(json_escape "$PEPONI_STORE")"
+    else
+      printf 'Copied peponi.to tasks onto this machine.\n'
+      printf 'Store: %s\n' "$PEPONI_STORE"
+      printf 'Daily work is local. Refresh again with: peponi pull\n'
+    fi
+  else
+    die "could not copy tasks — run peponi auth login first (paid account)"
   fi
 }
 
 cmd_auth_logout() {
-  need_cmd curl
   need_cmd python3
+  local had_local=0
+  [[ "$(read_mode)" == "local" ]] && had_local=1
+  save_mode none
+
   if [[ -f "$PEPONI_CREDENTIALS" ]]; then
-    local resp code body
+    need_cmd curl
+    local resp
     resp="$(api_curl DELETE /api/v1/auth/logout --auth || true)"
-    code="${resp%%$'\n'*}"
-    body="${resp#*$'\n'}"
     clear_credentials
     if [[ "$json_mode" -eq 1 ]]; then
-      printf '{"ok":true,"revoked":true}\n'
+      printf '{"ok":true,"revoked":true,"local_turned_off":%s}\n' \
+        "$([[ "$had_local" -eq 1 ]] && echo true || echo false)"
     else
-      printf 'Signed out. Local credentials removed.\n'
+      printf 'Signed out. Cloud credentials removed.\n'
+      if [[ "$had_local" -eq 1 ]]; then
+        printf 'Local mode turned off. Task data kept in %s\n' "$PEPONI_STORE"
+      fi
     fi
   else
-    [[ "$json_mode" -eq 1 ]] && printf '{"ok":true,"revoked":false}\n' || printf 'Already signed out.\n'
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '{"ok":true,"revoked":false,"local_turned_off":%s}\n' \
+        "$([[ "$had_local" -eq 1 ]] && echo true || echo false)"
+    else
+      if [[ "$had_local" -eq 1 ]]; then
+        printf 'Local mode turned off. Task data kept in %s\n' "$PEPONI_STORE"
+        printf 'Run peponi auth local to use it again, or peponi auth login for peponi.to.\n'
+      else
+        printf 'Already signed out.\n'
+      fi
+    fi
   fi
 }
 
 cmd_auth_status() {
-  need_cmd curl
   need_cmd python3
-  if [[ ! -f "$PEPONI_CREDENTIALS" ]]; then
+  local mode
+  mode="$(effective_mode)"
+
+  if [[ "$mode" == "local" ]]; then
     if [[ "$json_mode" -eq 1 ]]; then
-      printf '{"authenticated":false}\n'
+      local_status_json
+    else
+      printf 'Local mode — tasks on this machine\n'
+      printf 'Store: %s\n' "$PEPONI_STORE"
+    fi
+    return
+  fi
+
+  if [[ "$mode" != "cloud" ]]; then
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '{"authenticated":false,"mode":"none"}\n'
     else
       printf 'Not signed in.\n'
+      printf 'Use locally:  peponi auth local\n'
+      printf 'Or peponi.to: peponi auth login\n'
     fi
     exit 0
   fi
+
+  need_cmd curl
   local resp code body
   resp="$(api_curl GET /api/v1/auth/status --auth)"
   code="${resp%%$'\n'*}"
   body="${resp#*$'\n'}"
   if [[ "$code" != "200" ]]; then
     if [[ "$json_mode" -eq 1 ]]; then
-      printf '{"authenticated":false,"error":"token_rejected","http":%s}\n' "$code"
+      printf '{"authenticated":false,"mode":"cloud","error":"token_rejected","http":%s}\n' "$code"
     else
       printf 'Not authenticated (HTTP %s). Run: peponi auth login\n' "$code"
     fi
@@ -235,11 +677,22 @@ cmd_auth_status() {
 }
 
 cmd_day() {
-  need_cmd curl
   need_cmd python3
   local date="${1:-}"
   [[ -n "$date" ]] || die "usage: peponi day YYYY-MM-DD [--json]"
   [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "date must be YYYY-MM-DD"
+
+  local mode
+  mode="$(effective_mode)"
+  if [[ "$mode" == "none" ]]; then
+    die "not set up — run: peponi auth local   or   peponi auth login"
+  fi
+  if [[ "$mode" == "local" ]]; then
+    print_or_json 200 "$(store_op day "$date")"
+    return
+  fi
+
+  need_cmd curl
   local resp code body
   resp="$(api_curl GET "/api/v1/days/$date" --auth)"
   code="${resp%%$'\n'*}"
@@ -248,19 +701,120 @@ cmd_day() {
 }
 
 cmd_not_yet() {
-  need_cmd curl
   need_cmd python3
-  local resp code body
-  resp="$(api_curl GET /api/v1/not_yet --auth)"
-  code="${resp%%$'\n'*}"
-  body="${resp#*$'\n'}"
-  print_or_json "$code" "$body"
+  local sub="${1:-}"
+  if [[ "$sub" == "add" ]]; then
+    shift
+    cmd_not_yet_add "$*"
+    return
+  fi
+  if [[ "$sub" == "today" ]]; then
+    shift
+    cmd_not_yet_today "${1:-}" "${2:-}"
+    return
+  fi
+
+  # Not Yet on Omarchy is the local file. Optionally seed it once from peponi.to.
+  ensure_store
+  local mode
+  mode="$(effective_mode)"
+  if [[ "$mode" == "cloud" ]]; then
+    need_cmd curl
+    local resp code body
+    resp="$(api_curl GET /api/v1/not_yet --auth || true)"
+    code="${resp%%$'\n'*}"
+    body="${resp#*$'\n'}"
+    if [[ "$code" =~ ^2 ]]; then
+      local seed_file
+      seed_file="$(mktemp)"
+      printf '%s' "$body" > "$seed_file"
+      print_or_json 200 "$(store_op seed_not_yet "$seed_file")"
+      rm -f "$seed_file"
+      return
+    fi
+  fi
+  print_or_json 200 "$(store_op not_yet)"
 }
 
-# Add a Focus-column task on a date (today if omitted).
+# Add an undated Inbox task (Not Yet drawer).
+# Always written to this machine so the overlay row cannot vanish on a
+# failed peponi.to request. Cloud POST is best-effort only.
+# Usage: peponi not-yet add TITLE...
+cmd_not_yet_add() {
+  need_cmd python3
+  local title="$*"
+  title="${title#"${title%%[![:space:]]*}"}"
+  title="${title%"${title##*[![:space:]]}"}"
+  [[ -n "$title" ]] || die "usage: peponi not-yet add TITLE"
+
+  ensure_store
+  local body
+  body="$(store_op add_not_yet "$title")"
+
+  local mode
+  mode="$(effective_mode)"
+  if [[ "$mode" == "cloud" ]]; then
+    need_cmd curl || true
+    local payload resp
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+    resp="$(api_curl POST /api/v1/not_yet/tasks --auth --data "$payload" || true)"
+    # Ignore cloud errors — the local file is the source of truth here.
+    : "${resp:-}"
+  fi
+
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  python3 -c 'import json,sys
+d=json.load(sys.stdin)
+t=d.get("task") or {}
+print("Added \"%s\" to Not Yet (id %s)" % (t.get("title") or "", t.get("id") or "?"))
+' <<<"$body"
+}
+
+# Move a Not Yet task onto today (or a given date).
+# Usage: peponi not-yet today ID [YYYY-MM-DD]
+cmd_not_yet_today() {
+  need_cmd python3
+  local id="${1:-}" date="${2:-}"
+  [[ -n "$id" ]] || die "usage: peponi not-yet today ID [YYYY-MM-DD]"
+  [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from the Not Yet list)"
+  if [[ -z "$date" ]]; then
+    date="$(date +%F)"
+  fi
+  [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "date must be YYYY-MM-DD"
+
+  ensure_store
+  local body
+  body="$(store_op to_day "$id" "$date")" || {
+    printf 'peponi: not-yet today failed — task %s not found\n' "$id" >&2
+    exit 1
+  }
+
+  # Paid/cloud day view reads peponi.to — copy the title onto that date too.
+  if [[ "$(effective_mode)" == "cloud" ]]; then
+    local title payload resp
+    title="$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("task") or {}).get("title") or "")' <<<"$body")"
+    if [[ -n "$title" ]]; then
+      payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+      resp="$(api_curl POST "/api/v1/days/$date/tasks" --auth --data "$payload" || true)"
+      : "${resp:-}"
+    fi
+  fi
+
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  python3 -c 'import json,sys
+d=json.load(sys.stdin)
+t=d.get("task") or {}
+print("Moved \"%s\" to %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("id") or "?"))
+' "$date" <<<"$body"
+}
 # Usage: peponi add [YYYY-MM-DD] TITLE...
 cmd_add() {
-  need_cmd curl
   need_cmd python3
   local date title
   if [[ "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
@@ -274,13 +828,24 @@ cmd_add() {
   title="${title%"${title##*[![:space:]]}"}"
   [[ -n "$title" ]] || die "usage: peponi add [YYYY-MM-DD] TITLE"
 
-  local payload
-  payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+  local mode
+  mode="$(effective_mode)"
+  if [[ "$mode" == "none" ]]; then
+    die "not set up — run: peponi auth local   or   peponi auth login"
+  fi
 
-  local resp code body
-  resp="$(api_curl POST "/api/v1/days/$date/tasks" --auth --data "$payload")"
-  code="${resp%%$'\n'*}"
-  body="${resp#*$'\n'}"
+  local code=200 body
+  if [[ "$mode" == "local" ]]; then
+    body="$(store_op add "$date" "$title")"
+  else
+    need_cmd curl
+    local payload resp
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+    resp="$(api_curl POST "/api/v1/days/$date/tasks" --auth --data "$payload")"
+    code="${resp%%$'\n'*}"
+    body="${resp#*$'\n'}"
+  fi
+
   if [[ "$json_mode" -eq 1 ]]; then
     printf '%s\n' "$body"
     [[ "$code" =~ ^2 ]] || exit 1
@@ -302,16 +867,30 @@ print("Added \"%s\" on %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("
 # Delete a task by id (from peponi day JSON).
 # Usage: peponi rm ID
 cmd_rm() {
-  need_cmd curl
   need_cmd python3
   local id="${1:-}"
   [[ -n "$id" ]] || die "usage: peponi rm ID"
   [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from peponi day --json)"
 
-  local resp code body
-  resp="$(api_curl DELETE "/api/v1/todos/$id" --auth)"
-  code="${resp%%$'\n'*}"
-  body="${resp#*$'\n'}"
+  ensure_store
+  local code=200 body
+  if body="$(store_op rm "$id")"; then
+    :
+  else
+    local mode
+    mode="$(effective_mode)"
+    if [[ "$mode" == "cloud" ]]; then
+      need_cmd curl
+      local resp
+      resp="$(api_curl DELETE "/api/v1/todos/$id" --auth)"
+      code="${resp%%$'\n'*}"
+      body="${resp#*$'\n'}"
+    else
+      printf 'peponi: rm failed — task %s not found\n' "$id" >&2
+      exit 1
+    fi
+  fi
+
   if [[ "$json_mode" -eq 1 ]]; then
     printf '%s\n' "$body"
     [[ "$code" =~ ^2 ]] || exit 1
@@ -328,23 +907,33 @@ cmd_rm() {
 
 usage() {
   cat <<'EOF'
-peponi — Omarchy / desktop helper for paid peponi.to accounts
+peponi — Omarchy / desktop helper
+
+Use it in either way:
+  peponi auth local              tasks stay on this machine (no account)
+  peponi auth login              paid license, then copy tasks onto this machine
+  peponi auth login --cloud      keep using peponi.to as a live database
 
 Usage:
-  peponi auth login [--json]
+  peponi auth local [--json]
+  peponi auth login [--cloud] [--json]
   peponi auth logout [--json]
   peponi auth status [--json]
+  peponi pull [--json]
   peponi day YYYY-MM-DD [--json]
   peponi not-yet [--json]
+  peponi not-yet add TITLE [--json]
+  peponi not-yet today ID [YYYY-MM-DD] [--json]
   peponi add [YYYY-MM-DD] TITLE [--json]
   peponi rm ID [--json]
   peponi help
 
 Environment:
-  PEPONI_BASE_URL     API host (default https://peponi.to)
+  PEPONI_BASE_URL     API host for sign-in / pull (default https://peponi.to)
   PEPONI_EMAIL        Non-interactive login email
   PEPONI_PASSWORD     Non-interactive login password
   PEPONI_CONFIG_DIR   Config directory (default ~/.config/peponi)
+  PEPONI_DATA_DIR     Local task directory (default ~/.local/share/peponi)
 EOF
 }
 
@@ -363,14 +952,16 @@ main() {
       local sub="${args[0]:-}"
       args=("${args[@]:1}")
       case "$sub" in
-        login)  cmd_auth_login ;;
+        local)  cmd_auth_local ;;
+        login)  cmd_auth_login "${args[@]}" ;;
         logout) cmd_auth_logout ;;
         status) cmd_auth_status ;;
-        *) die "usage: peponi auth <login|logout|status>" ;;
+        *) die "usage: peponi auth <local|login|logout|status>" ;;
       esac
       ;;
+    pull) cmd_pull ;;
     day) cmd_day "${args[0]:-}" ;;
-    not-yet|not_yet) cmd_not_yet ;;
+    not-yet|not_yet) cmd_not_yet "${args[@]}" ;;
     add)
       if ((${#args[@]} > 0)); then
         cmd_add "${args[@]}"

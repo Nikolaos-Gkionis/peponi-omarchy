@@ -6,6 +6,7 @@ PLUGIN_ID="peponi.one-day"
 PLUGIN_DST="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/$PLUGIN_ID"
 BIN_DST="${XDG_BIN_HOME:-$HOME/.local/bin}/peponi"
 CRED_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/peponi"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/peponi"
 
 echo "==> Peponi Omarchy helper uninstall"
 
@@ -25,7 +26,7 @@ if [[ -x "$BIN_DST" ]]; then
   echo "    removed $BIN_DST"
 fi
 
-printf "Remove local credentials in %s? [y/N]: " "$CRED_DIR"
+printf "Remove cloud credentials in %s? [y/N]: " "$CRED_DIR"
 read -r wipe || true
 if [[ "${wipe:-}" =~ ^[Yy]$ ]]; then
   command -v peponi >/dev/null 2>&1 && peponi auth logout 2>/dev/null || true
@@ -33,6 +34,15 @@ if [[ "${wipe:-}" =~ ^[Yy]$ ]]; then
   echo "    credentials removed"
 else
   echo "    left credentials in place"
+fi
+
+printf "Remove local task data in %s? [y/N]: " "$DATA_DIR"
+read -r wipe_data || true
+if [[ "${wipe_data:-}" =~ ^[Yy]$ ]]; then
+  rm -rf "$DATA_DIR"
+  echo "    local task data removed"
+else
+  echo "    left local task data in place"
 fi
 
 echo "    Note: SUPER+ALT lines in ~/.config/hypr/bindings.lua are not auto-removed."

@@ -1,6 +1,6 @@
 // Peponi One Day — date helpers + task shaping.
-// Demo data only when PEPONI_DEMO=1 (offline smoke). Otherwise the overlay
-// loads live JSON from the peponi CLI (Service / Process).
+// Live JSON comes from the peponi CLI (local store or peponi.to).
+// Demo data only when PEPONI_DEMO=1 (offline smoke).
 
 var WEEKDAYS_LONG = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 var WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
@@ -95,7 +95,7 @@ function tasksFromDayJson(raw) {
   return out
 }
 
-// Flatten Not Yet pages → drawer rows ({ title, list })
+// Flatten Not Yet pages → drawer rows ({ id, title, list, done })
 function notYetFromJson(raw) {
   var data = ({})
   try { data = JSON.parse(raw || "{}") } catch (e) { return [] }
@@ -108,14 +108,27 @@ function notYetFromJson(raw) {
     for (var i = 0; i < todos.length; i++) {
       var t = todos[i] || {}
       if (t.is_visual_break === true) continue
-      out.push({
-        id: t.id,
-        title: String(t.title || ""),
-        list: listName,
-        done: t.completed === true
-      })
+      out.push(notYetRow(t, listName))
     }
   }
+  return out
+}
+
+// One drawer row. listName is the page/inbox name from the API.
+function notYetRow(task, listName) {
+  task = task || {}
+  return {
+    id: task.id,
+    title: String(task.title || ""),
+    list: String(task.list || listName || ""),
+    done: task.completed === true || task.done === true
+  }
+}
+
+function copyRows(rows) {
+  var out = []
+  if (!rows) return out
+  for (var i = 0; i < rows.length; i++) out.push(rows[i])
   return out
 }
 
