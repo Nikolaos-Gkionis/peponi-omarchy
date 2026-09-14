@@ -1,0 +1,302 @@
+#!/usr/bin/env bash
+# peponi — desktop CLI for paid peponi.to accounts (Omarchy helper).
+# Credentials live in ~/.config/peponi/credentials.json (mode 0600).
+# Override API host with PEPONI_BASE_URL (default https://peponi.to).
+
+set -euo pipefail
+
+PEPONI_CONFIG_DIR="${PEPONI_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/peponi}"
+PEPONI_CREDENTIALS="${PEPONI_CREDENTIALS:-$PEPONI_CONFIG_DIR/credentials.json}"
+DEFAULT_BASE_URL="https://peponi.to"
+
+json_mode=0
+for arg in "$@"; do
+  case "$arg" in
+    --json) json_mode=1 ;;
+  esac
+done
+
+die() {
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '{"ok":false,"error":%s}\n' "$(json_escape "$1")" >&2
+  else
+    printf 'peponi: %s\n' "$1" >&2
+  fi
+  exit "${2:-1}"
+}
+
+json_escape() {
+  # Minimal JSON string escape for errors / status
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1 (install it and retry)"
+}
+
+base_url() {
+  if [[ -n "${PEPONI_BASE_URL:-}" ]]; then
+    echo "${PEPONI_BASE_URL%/}"
+    return
+  fi
+  if [[ -f "$PEPONI_CREDENTIALS" ]]; then
+    local u
+    u="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("base_url",""))' "$PEPONI_CREDENTIALS" 2>/dev/null || true)"
+    if [[ -n "$u" ]]; then
+      echo "${u%/}"
+      return
+    fi
+  fi
+  echo "$DEFAULT_BASE_URL"
+}
+
+read_token() {
+  [[ -f "$PEPONI_CREDENTIALS" ]] || die "not signed in — run: peponi auth login" 2
+  local token
+  token="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1])).get("token") or ""; print(t)' "$PEPONI_CREDENTIALS")"
+  [[ -n "$token" ]] || die "credentials missing token — run: peponi auth login" 2
+  printf '%s' "$token"
+}
+
+save_credentials() {
+  local token="$1" email="$2" url="$3" expires="${4:-}"
+  mkdir -p "$PEPONI_CONFIG_DIR"
+  umask 077
+  python3 - "$PEPONI_CREDENTIALS" "$token" "$email" "$url" "$expires" <<'PY'
+import json, sys
+path, token, email, url, expires = sys.argv[1:6]
+data = {"token": token, "email": email, "base_url": url}
+if expires:
+    data["expires_at"] = expires
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+  chmod 600 "$PEPONI_CREDENTIALS"
+}
+
+clear_credentials() {
+  rm -f "$PEPONI_CREDENTIALS"
+}
+
+api_curl() {
+  local method="$1" path="$2"
+  shift 2
+  local url
+  url="$(base_url)${path}"
+  local args=(-sS -X "$method" -H "Accept: application/json" -H "Content-Type: application/json")
+  local use_auth=0
+  local data=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --auth) use_auth=1; shift ;;
+      --data) data="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$use_auth" -eq 1 ]]; then
+    args+=(-H "Authorization: Bearer $(read_token)")
+  fi
+  if [[ -n "$data" ]]; then
+    args+=(--data "$data")
+  fi
+  local tmp code body
+  tmp="$(mktemp)"
+  code="$(curl "${args[@]}" -o "$tmp" -w '%{http_code}' "$url")" || {
+    rm -f "$tmp"
+    die "network error talking to $url"
+  }
+  body="$(cat "$tmp")"
+  rm -f "$tmp"
+  printf '%s\n%s' "$code" "$body"
+}
+
+print_or_json() {
+  local code="$1" body="$2"
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+  else
+    if command -v jq >/dev/null 2>&1; then
+      printf '%s\n' "$body" | jq .
+    else
+      printf '%s\n' "$body"
+    fi
+  fi
+  [[ "$code" =~ ^2 ]] || exit 1
+}
+
+cmd_auth_login() {
+  need_cmd curl
+  need_cmd python3
+
+  local email="${PEPONI_EMAIL:-}" password="${PEPONI_PASSWORD:-}"
+  local url
+  url="$(base_url)"
+
+  if [[ -z "$email" ]]; then
+    printf 'Peponi email: ' >&2
+    IFS= read -r email
+  fi
+  if [[ -z "$password" ]]; then
+    printf 'Password: ' >&2
+    stty -echo
+    IFS= read -r password
+    stty echo
+    printf '\n' >&2
+  fi
+  [[ -n "$email" && -n "$password" ]] || die "email and password required"
+
+  # Say which host we will hit so leftover credentials.json base_url is obvious.
+  if [[ "$json_mode" -ne 1 ]]; then
+    printf 'Signing in to %s as %s\n' "$url" "$email" >&2
+    printf '(override with PEPONI_BASE_URL; default is %s)\n' "$DEFAULT_BASE_URL" >&2
+  fi
+
+  local payload
+  payload="$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' "$email" "$password")"
+
+  local resp code body
+  resp="$(api_curl POST /api/v1/auth/login --data "$payload")"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+
+  if [[ "$code" != "200" ]]; then
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '%s\n' "$body"
+    else
+      printf 'peponi: login failed (HTTP %s)\n' "$code" >&2
+      printf '%s\n' "$body" | (command -v jq >/dev/null && jq . || cat) >&2
+    fi
+    exit 1
+  fi
+
+  local token expires
+  token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$body")"
+  expires="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("expires_at") or "")' <<<"$body")"
+  save_credentials "$token" "$email" "$url" "$expires"
+
+  if [[ "$json_mode" -eq 1 ]]; then
+    python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["credentials"]="saved"; print(json.dumps(d))' <<<"$body"
+  else
+    printf 'Signed in as %s (%s)\n' "$email" "$url"
+    printf 'Credentials saved to %s\n' "$PEPONI_CREDENTIALS"
+  fi
+}
+
+cmd_auth_logout() {
+  need_cmd curl
+  need_cmd python3
+  if [[ -f "$PEPONI_CREDENTIALS" ]]; then
+    local resp code body
+    resp="$(api_curl DELETE /api/v1/auth/logout --auth || true)"
+    code="${resp%%$'\n'*}"
+    body="${resp#*$'\n'}"
+    clear_credentials
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '{"ok":true,"revoked":true}\n'
+    else
+      printf 'Signed out. Local credentials removed.\n'
+    fi
+  else
+    [[ "$json_mode" -eq 1 ]] && printf '{"ok":true,"revoked":false}\n' || printf 'Already signed out.\n'
+  fi
+}
+
+cmd_auth_status() {
+  need_cmd curl
+  need_cmd python3
+  if [[ ! -f "$PEPONI_CREDENTIALS" ]]; then
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '{"authenticated":false}\n'
+    else
+      printf 'Not signed in.\n'
+    fi
+    exit 0
+  fi
+  local resp code body
+  resp="$(api_curl GET /api/v1/auth/status --auth)"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  if [[ "$code" != "200" ]]; then
+    if [[ "$json_mode" -eq 1 ]]; then
+      printf '{"authenticated":false,"error":"token_rejected","http":%s}\n' "$code"
+    else
+      printf 'Not authenticated (HTTP %s). Run: peponi auth login\n' "$code"
+    fi
+    exit 1
+  fi
+  print_or_json "$code" "$body"
+}
+
+cmd_day() {
+  need_cmd curl
+  need_cmd python3
+  local date="${1:-}"
+  [[ -n "$date" ]] || die "usage: peponi day YYYY-MM-DD [--json]"
+  [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "date must be YYYY-MM-DD"
+  local resp code body
+  resp="$(api_curl GET "/api/v1/days/$date" --auth)"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  print_or_json "$code" "$body"
+}
+
+cmd_not_yet() {
+  need_cmd curl
+  need_cmd python3
+  local resp code body
+  resp="$(api_curl GET /api/v1/not_yet --auth)"
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  print_or_json "$code" "$body"
+}
+
+usage() {
+  cat <<'EOF'
+peponi — Omarchy / desktop helper for paid peponi.to accounts
+
+Usage:
+  peponi auth login [--json]
+  peponi auth logout [--json]
+  peponi auth status [--json]
+  peponi day YYYY-MM-DD [--json]
+  peponi not-yet [--json]
+  peponi help
+
+Environment:
+  PEPONI_BASE_URL     API host (default https://peponi.to)
+  PEPONI_EMAIL        Non-interactive login email
+  PEPONI_PASSWORD     Non-interactive login password
+  PEPONI_CONFIG_DIR   Config directory (default ~/.config/peponi)
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  # Strip --json from remaining args for subcommands that take positional dates
+  local args=()
+  for a in "$@"; do
+    [[ "$a" == "--json" ]] && continue
+    args+=("$a")
+  done
+
+  case "$cmd" in
+    auth)
+      local sub="${args[0]:-}"
+      args=("${args[@]:1}")
+      case "$sub" in
+        login)  cmd_auth_login ;;
+        logout) cmd_auth_logout ;;
+        status) cmd_auth_status ;;
+        *) die "usage: peponi auth <login|logout|status>" ;;
+      esac
+      ;;
+    day) cmd_day "${args[0]:-}" ;;
+    not-yet|not_yet) cmd_not_yet ;;
+    help|-h|--help) usage ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+main "$@"
