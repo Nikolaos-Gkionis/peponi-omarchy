@@ -4,7 +4,7 @@ Keyboard-first **one-day** focus overlay for [Omarchy](https://omarchy.org/).
 
 Use it **locally on this machine** (no account) or sign in with a **paid** [peponi.to](https://peponi.to) license so we can copy your existing tasks here. After that, daily work stays on disk — peponi.to is not a live Omarchy database.
 
-Browse today with `←` / `→`, add with `n`, remove with `Delete`, open **Not Yet** with `y`, send a Not Yet task to today with `a`, jump to today with `t`. A small local `peponi` CLI stores tasks on disk, and can copy a snapshot from peponi.to when you sign in.
+Browse today with `h`/`l` (or arrows), tick with `Space` or a click, reorder with `K`/`J` or the row arrows, add with `n`, remove with `Delete`, open **Not Yet** with `y`, send a Not Yet task to today with `a`, jump to today with `t`. A small local `peponi` CLI stores tasks on disk, and can copy a snapshot from peponi.to when you sign in.
 
 ![Peponi One Day overlay](preview.png)
 
@@ -83,6 +83,9 @@ peponi auth login          # paid peponi.to account
 peponi auth status --json
 peponi day $(date +%F) --json
 peponi add $(date +%F) "Buy milk"
+peponi tick ID
+peponi move ID up
+peponi pref roll-over on
 peponi rm ID
 peponi not-yet --json
 peponi not-yet add "Call mum"
@@ -96,7 +99,9 @@ Switch anytime: `peponi auth local` or `peponi auth login` (copies a snapshot, t
 
 ## Keybindings
 
-**In-overlay:** `←`/`→` day · `n` add · `Delete` remove · `y` Not Yet · `t` today · `Esc` close · `?` help · `l` use locally · `a` sign in (the last two only when not set up yet, and `a` is sign-in only while the drawer is **closed**)
+**In-overlay:** `h`/`l` or `←`/`→` day · `j`/`k` list · `Space` tick · `K`/`J` move · `n` add · `r` roll unfinished to today · `Delete` remove · `y` Not Yet · `t` today · `Esc` close · `?` help · `l` use locally · `a` sign in (the last two only when not set up yet, and `a` is sign-in only while the drawer is **closed**)
+
+Mouse: click the checkbox to tick, `↑`/`↓` on a row to reorder, or the roll-over line under the heading.
 
 ### Not Yet (the `y` drawer)
 
@@ -106,7 +111,8 @@ Switch anytime: `peponi auth local` or `peponi auth login` (copies a snapshot, t
 |-----|----------------|
 | `y` | Open or close the Not Yet drawer |
 | `n` | Add a Not Yet task (type a title, Enter) |
-| `↑` / `↓` | Highlight a task in the drawer |
+| `↑` / `↓` or `j` / `k` | Highlight a task in the drawer |
+| `K` / `J` | Move the highlighted Not Yet task up / down |
 | `a` | Move the **highlighted** Not Yet task onto **today** |
 | `Delete` | Remove the highlighted Not Yet task |
 | `Esc` | Close the drawer (then the overlay) |
@@ -120,6 +126,8 @@ While the drawer is open, those keys apply to Not Yet, not the day. `a` means �
 | `SUPER + ALT + O` | Toggle overlay |
 | `SUPER + ALT + LEFT/RIGHT` | Prev / next day |
 | `SUPER + ALT + Y` | Toggle Not Yet drawer |
+| `SUPER + ALT + SPACE` | Tick highlighted task |
+| `SUPER + ALT + K` / `J` | Move highlighted task up / down |
 
 ## Uninstall
 

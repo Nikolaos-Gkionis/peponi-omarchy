@@ -34,6 +34,8 @@ Item {
   property date selectedDate: Model.startOfToday()
   property var dayTasks: []
   property var notYetItems: []
+  property bool rollOver: true
+  property string keepSelectedId: ""
 
   readonly property bool demoMode: Quickshell.env("PEPONI_DEMO") === "1"
   readonly property bool busy: probing || loadingDay || loadingNotYet || mutating
@@ -71,7 +73,7 @@ Item {
   function loadDay(dateObj) {
     selectedDate = dateObj instanceof Date ? dateObj : Model.startOfToday()
     if (demoMode) {
-      dayTasks = Model.tasksForDate(selectedDate)
+      dayTasks = Model.sortUnfinishedFirst(Model.tasksForDate(selectedDate))
       openTaskCount = Model.openCount(dayTasks)
       return
     }
@@ -123,6 +125,72 @@ Item {
     pendingNotYetToday = false
     lastError = ""
     startPeponi(mutateProcess, ["add", Model.keyForDate(when), title, "--json"])
+  }
+
+  // Tick / untick. Unfinished rows stay at the top after the save.
+  function toggleTask(id) {
+    if (id === undefined || id === null || String(id) === "") return
+    keepSelectedId = String(id)
+    if (demoMode) {
+      dayTasks = Model.toggleRowCopy(dayTasks, id)
+      notYetItems = Model.toggleRowCopy(notYetItems, id)
+      openTaskCount = Model.openCount(dayTasks)
+      lastError = ""
+      return
+    }
+    if (!authenticated) return
+    dayTasks = Model.toggleRowCopy(dayTasks, id)
+    notYetItems = Model.toggleRowCopy(notYetItems, id)
+    openTaskCount = Model.openCount(dayTasks)
+    var idx = Model.findIndexById(dayTasks, id)
+    if (idx < 0) idx = Model.findIndexById(notYetItems, id)
+    var nowDone = false
+    if (idx >= 0) {
+      var src = Model.findIndexById(dayTasks, id) >= 0 ? dayTasks : notYetItems
+      nowDone = Model.isDone(src[Model.findIndexById(src, id)])
+    }
+    mutating = true
+    pendingNotYetAdd = false
+    pendingNotYetToday = false
+    lastError = ""
+    startPeponi(mutateProcess, ["tick", String(id), nowDone ? "on" : "off", "--json"])
+  }
+
+  // delta -1 = up, +1 = down. Stays inside unfinished or ticked group.
+  function moveTask(id, delta) {
+    if (id === undefined || id === null || String(id) === "") return
+    keepSelectedId = String(id)
+    var dir = delta < 0 ? "up" : "down"
+    if (demoMode) {
+      dayTasks = Model.moveRowCopy(dayTasks, id, delta)
+      notYetItems = Model.moveRowCopy(notYetItems, id, delta)
+      lastError = ""
+      return
+    }
+    if (!authenticated) return
+    dayTasks = Model.moveRowCopy(dayTasks, id, delta)
+    notYetItems = Model.moveRowCopy(notYetItems, id, delta)
+    mutating = true
+    pendingNotYetAdd = false
+    pendingNotYetToday = false
+    lastError = ""
+    startPeponi(mutateProcess, ["move", String(id), dir, Model.keyForDate(selectedDate), "--json"])
+  }
+
+  // Keyboard-only local users toggle this with `r`. Matches peponi.to roll_over.
+  function setRollOver(enabled) {
+    rollOver = enabled === true
+    if (demoMode) return
+    if (!authenticated) return
+    mutating = true
+    pendingNotYetAdd = false
+    pendingNotYetToday = false
+    lastError = ""
+    startPeponi(mutateProcess, ["pref", "roll_over", rollOver ? "on" : "off", "--json"])
+  }
+
+  function toggleRollOver() {
+    setRollOver(!rollOver)
   }
 
   // Delete by API id (from the day JSON). Demo ids are local-only strings.
@@ -303,7 +371,11 @@ Item {
         userEmail = data.user.email || ""
         appTitle = data.user.app_title || "Peponi"
         notYetTitle = data.user.not_yet_panel_title || "Not Yet"
+        if (data.user.roll_over !== undefined)
+          rollOver = data.user.roll_over !== false
       }
+      if (data.prefs && data.prefs.roll_over !== undefined)
+        rollOver = data.prefs.roll_over !== false
       if (!authenticated) {
         statusMessage = ""
         lastError = ""
@@ -337,6 +409,11 @@ Item {
     }
     dayTasks = Model.tasksFromDayJson(stdoutText)
     openTaskCount = Model.openCount(dayTasks)
+    try {
+      var data = JSON.parse(stdoutText || "{}")
+      if (data.prefs && data.prefs.roll_over !== undefined)
+        rollOver = data.prefs.roll_over !== false
+    } catch (e) {}
     lastError = ""
   }
 

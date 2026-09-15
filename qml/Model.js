@@ -48,10 +48,72 @@ function relativeLabel(selected, today) {
   return Math.abs(diff) + " days ago"
 }
 
+function isDone(task) {
+  if (!task) return false
+  return task.done === true || task.completed === true
+}
+
 function openCount(tasks) {
   var n = 0
-  for (var i = 0; i < tasks.length; i++) if (!tasks[i].done) n++
+  for (var i = 0; i < tasks.length; i++) if (!isDone(tasks[i])) n++
   return n
+}
+
+// Website Focus column: unfinished first, ticked after, each group in stored order.
+function sortUnfinishedFirst(rows) {
+  var open = []
+  var done = []
+  var list = rows || []
+  for (var i = 0; i < list.length; i++) {
+    if (isDone(list[i])) done.push(list[i])
+    else open.push(list[i])
+  }
+  return open.concat(done)
+}
+
+function findIndexById(rows, id) {
+  if (!rows || id === undefined || id === null) return -1
+  var want = String(id)
+  for (var i = 0; i < rows.length; i++) {
+    if (rows[i] && String(rows[i].id) === want) return i
+  }
+  return -1
+}
+
+function toggleRowCopy(rows, id) {
+  var idx = findIndexById(rows, id)
+  if (idx < 0) return rows || []
+  var out = []
+  var list = rows || []
+  for (var i = 0; i < list.length; i++) {
+    var row = list[i]
+    if (i === idx) {
+      out.push({
+        id: row.id,
+        title: row.title,
+        done: !isDone(row),
+        list: row.list || "",
+        is_visual_break: row.is_visual_break === true
+      })
+    } else {
+      out.push(row)
+    }
+  }
+  return sortUnfinishedFirst(out)
+}
+
+function moveRowCopy(rows, id, delta) {
+  var idx = findIndexById(rows, id)
+  if (idx < 0) return rows || []
+  var visual = sortUnfinishedFirst(rows)
+  idx = findIndexById(visual, id)
+  var other = idx + (delta < 0 ? -1 : 1)
+  if (other < 0 || other >= visual.length) return visual
+  if (isDone(visual[idx]) !== isDone(visual[other])) return visual
+  var tmp = visual[idx]
+  visual[idx] = visual[other]
+  visual[other] = tmp
+  return visual
 }
 
 function parsePayloadDate(payloadJson) {
@@ -92,7 +154,7 @@ function tasksFromDayJson(raw) {
       is_visual_break: t.is_visual_break === true
     })
   }
-  return out
+  return sortUnfinishedFirst(out)
 }
 
 // Flatten Not Yet pages → drawer rows ({ id, title, list, done })
@@ -122,6 +184,15 @@ function notYetRow(task, listName) {
     title: String(task.title || ""),
     list: String(task.list || listName || ""),
     done: task.completed === true || task.done === true
+  }
+}
+
+function prefsFromJson(raw) {
+  var data = ({})
+  try { data = JSON.parse(raw || "{}") } catch (e) { return ({ roll_over: true }) }
+  var prefs = data.prefs || (data.user ? ({ roll_over: data.user.roll_over }) : ({}) )
+  return {
+    roll_over: prefs.roll_over !== false
   }
 }
 

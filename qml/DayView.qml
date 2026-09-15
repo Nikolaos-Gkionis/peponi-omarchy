@@ -4,6 +4,8 @@ import qs.Ui
 
 // One day's task list for the selected date.
 // Parent (Overlay) owns selectedDate + task model; this is presentation only.
+// Mouse: click checkbox to tick, arrows to move, row to highlight.
+// Keyboard lives on Overlay (j/k, Space, J/K).
 Item {
   id: root
 
@@ -16,6 +18,10 @@ Item {
   property color selectedBackground: Color.menu.selectedBackground
   property color selectedText: Color.menu.selectedText
   property string fontFamily: Style.font.menuFamily
+
+  signal toggleRequested(var taskId)
+  signal moveRequested(var taskId, int delta)
+  signal rowClicked(int index)
 
   readonly property int openCount: {
     var n = 0
@@ -37,9 +43,36 @@ Item {
     }
   }
 
+  function selectIndex(index) {
+    if (!tasks || tasks.length === 0) return
+    if (index < 0 || index >= tasks.length) return
+    selectedIndex = index
+    cursorActive = true
+  }
+
+  // After tick/move the list reorders — keep the same task highlighted.
+  function selectById(id) {
+    if (!tasks || id === undefined || id === null) return false
+    var want = String(id)
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i] && String(tasks[i].id) === want) {
+        selectedIndex = i
+        cursorActive = true
+        return true
+      }
+    }
+    return false
+  }
+
   function resetCursor() {
     selectedIndex = 0
     cursorActive = false
+  }
+
+  function rowId(index) {
+    if (!tasks || index < 0 || index >= tasks.length) return ""
+    var row = tasks[index]
+    return row && row.id !== undefined && row.id !== null ? row.id : ""
   }
 
   // After add/remove the list length changes — keep the highlight valid.
@@ -91,9 +124,21 @@ Item {
             width: taskColumn.width
             height: row.implicitHeight + Style.space(14)
             radius: Style.cornerRadius
-            color: root.cursorActive && root.selectedIndex === index
+            color: (hover.containsMouse || (root.cursorActive && root.selectedIndex === index))
               ? root.selectedBackground
               : "transparent"
+
+            MouseArea {
+              id: hover
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              acceptedButtons: Qt.LeftButton
+              onClicked: {
+                root.selectIndex(index)
+                root.rowClicked(index)
+              }
+            }
 
             Row {
               id: row
@@ -101,27 +146,40 @@ Item {
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               anchors.leftMargin: Style.space(10)
-              anchors.rightMargin: Style.space(10)
-              spacing: Style.space(12)
+              anchors.rightMargin: Style.space(8)
+              spacing: Style.space(10)
 
-              // Checkbox glyph (done vs open)
+              // Checkbox — mouse tick. Keyboard uses Space on the highlighted row.
               Text {
+                id: checkGlyph
                 anchors.verticalCenter: parent.verticalCenter
                 text: modelData.done ? "󰄲" : "󰄱"
                 color: modelData.done ? root.dim : root.accent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body
+
+                MouseArea {
+                  anchors.fill: parent
+                  anchors.margins: -Style.space(6)
+                  cursorShape: Qt.PointingHandCursor
+                  preventStealing: true
+                  z: 5
+                  onClicked: {
+                    root.selectIndex(index)
+                    root.toggleRequested(modelData.id)
+                  }
+                }
               }
 
               Column {
-                width: parent.width - Style.space(40)
+                width: parent.width - Style.space(88)
                 spacing: Style.space(2)
 
                 Text {
                   width: parent.width
                   text: modelData.title
                   textFormat: Text.PlainText
-                  color: root.cursorActive && root.selectedIndex === index
+                  color: (hover.containsMouse || (root.cursorActive && root.selectedIndex === index))
                     ? root.selectedText
                     : (modelData.done ? root.dim : root.foreground)
                   font.family: root.fontFamily
@@ -139,6 +197,54 @@ Item {
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                   elide: Text.ElideRight
+                }
+              }
+
+              // Mouse move — same as keyboard J / K. Shown on hover or highlight.
+              Row {
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: Style.space(4)
+                visible: hover.containsMouse || (root.cursorActive && root.selectedIndex === index)
+                opacity: visible ? 1 : 0
+
+                Text {
+                  text: "↑"
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+
+                  MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(6)
+                    cursorShape: Qt.PointingHandCursor
+                    preventStealing: true
+                    z: 5
+                    onClicked: {
+                      root.selectIndex(index)
+                      root.moveRequested(modelData.id, -1)
+                    }
+                  }
+                }
+
+                Text {
+                  text: "↓"
+                  color: root.accent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+
+                  MouseArea {
+                    anchors.fill: parent
+                    anchors.margins: -Style.space(6)
+                    cursorShape: Qt.PointingHandCursor
+                    preventStealing: true
+                    z: 5
+                    onClicked: {
+                      root.selectIndex(index)
+                      root.moveRequested(modelData.id, 1)
+                    }
+                  }
                 }
               }
             }

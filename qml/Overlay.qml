@@ -35,6 +35,7 @@ Item {
   property string authBanner: ""
   property bool signedIn: false
   property string dataMode: ""   // "local" | "cloud" | "demo" | ""
+  property bool rollOver: true
 
   readonly property bool demoMode: Quickshell.env("PEPONI_DEMO") === "1"
 
@@ -182,6 +183,7 @@ Item {
     if (!root.service) return false
     root.signedIn = root.service.authenticated === true || root.demoMode
     root.dataMode = root.demoMode ? "demo" : (root.service.dataMode || "")
+    root.rollOver = root.service.rollOver !== false
     if (root.demoMode) {
       root.authBanner = ""
       root.dayTasks = root.service.dayTasks && root.service.dayTasks.length
@@ -200,6 +202,13 @@ Item {
       root.dayTasks = []
       root.notYetItems = []
     }
+    Qt.callLater(function() {
+      var keep = root.service && root.service.keepSelectedId
+      if (keep) {
+        if (root.drawerOpen) drawer.selectById(keep)
+        else dayView.selectById(keep)
+      }
+    })
     return true
   }
 
@@ -318,6 +327,85 @@ Item {
       root.service.removeTask(task.id)
   }
 
+  function selectedRow() {
+    if (root.drawerOpen) {
+      if (!drawer.cursorActive || !drawer.items || drawer.items.length === 0)
+        return null
+      return drawer.items[drawer.selectedIndex]
+    }
+    if (!dayView.cursorActive || !dayView.tasks || dayView.tasks.length === 0)
+      return null
+    return dayView.tasks[dayView.selectedIndex]
+  }
+
+  // Space (keyboard) or checkbox click (mouse).
+  function toggleSelectedTask() {
+    if ((!root.signedIn && !root.demoMode) || root.composing || root.helpOpen)
+      return
+    var row = root.selectedRow()
+    if (!row || row.id === undefined || row.id === null || String(row.id) === "") {
+      root.authBanner = "Highlight a task with j / k, then Space to tick"
+      return
+    }
+    root.toggleTaskById(row.id)
+  }
+
+  function toggleTaskById(id) {
+    if (root.service && typeof root.service.toggleTask === "function")
+      root.service.toggleTask(id)
+  }
+
+  // K / ↑ button = up, J / ↓ button = down.
+  function moveSelectedTask(delta) {
+    if ((!root.signedIn && !root.demoMode) || root.composing || root.helpOpen)
+      return
+    var row = root.selectedRow()
+    if (!row || row.id === undefined || row.id === null || String(row.id) === "") {
+      root.authBanner = "Highlight a task with j / k, then K / J to move"
+      return
+    }
+    root.moveTaskById(row.id, delta)
+  }
+
+  function moveTaskById(id, delta) {
+    if (root.service && typeof root.service.moveTask === "function")
+      root.service.moveTask(id, delta)
+  }
+
+  function toggleRollOver() {
+    if ((!root.signedIn && !root.demoMode) || root.composing || root.helpOpen)
+      return
+    if (root.service && typeof root.service.toggleRollOver === "function")
+      root.service.toggleRollOver()
+    else
+      root.rollOver = !root.rollOver
+  }
+
+  // IPC for keyboard-only Omarchy users (optional Hyprland chords).
+  function toggleSelected() {
+    root.ensureOpenForIpc()
+    root.toggleSelectedTask()
+    return "ok"
+  }
+
+  function moveSelectedUp() {
+    root.ensureOpenForIpc()
+    root.moveSelectedTask(-1)
+    return "ok"
+  }
+
+  function moveSelectedDown() {
+    root.ensureOpenForIpc()
+    root.moveSelectedTask(1)
+    return "ok"
+  }
+
+  function toggleRoll() {
+    root.ensureOpenForIpc()
+    root.toggleRollOver()
+    return root.rollOver ? "on" : "off"
+  }
+
   // a in the Not Yet drawer: put the highlighted inbox task on today.
   function sendNotYetToToday() {
     if (!root.drawerOpen || root.composing || root.helpOpen)
@@ -348,6 +436,7 @@ Item {
     function onLastErrorChanged() { root.syncFromService() }
     function onStatusMessageChanged() { root.syncFromService() }
     function onDataModeChanged() { root.syncFromService() }
+    function onRollOverChanged() { root.syncFromService() }
   }
 
   Component.onCompleted: {
@@ -493,16 +582,45 @@ Item {
             return
           }
 
-          // ↑ / ↓ : move among tasks (or Not Yet items when drawer is open)
-          if (event.key === Qt.Key_Up) {
+          // ↑ / ↓ / j / k : move among tasks (or Not Yet items when drawer is open)
+          if (event.key === Qt.Key_Up || (event.key === Qt.Key_K && !(event.modifiers & Qt.ShiftModifier))) {
             if (root.drawerOpen) drawer.select(-1)
             else dayView.select(-1)
             event.accepted = true
             return
           }
-          if (event.key === Qt.Key_Down) {
+          if (event.key === Qt.Key_Down || (event.key === Qt.Key_J && !(event.modifiers & Qt.ShiftModifier))) {
             if (root.drawerOpen) drawer.select(1)
             else dayView.select(1)
+            event.accepted = true
+            return
+          }
+
+          // Shift+K / Shift+J — move the highlighted task (neovim-style)
+          if (event.key === Qt.Key_K && (event.modifiers & Qt.ShiftModifier)) {
+            root.moveSelectedTask(-1)
+            event.accepted = true
+            return
+          }
+          if (event.key === Qt.Key_J && (event.modifiers & Qt.ShiftModifier)) {
+            root.moveSelectedTask(1)
+            event.accepted = true
+            return
+          }
+
+          // h / l — same as ← / → when signed in (neovim). Unsigned `l` stays "use locally".
+          if (event.key === Qt.Key_H || ((event.key === Qt.Key_L) && (root.signedIn || root.demoMode))) {
+            if (event.key === Qt.Key_H) {
+              if (!root.drawerOpen) root.prevDay()
+            } else if (!root.drawerOpen) {
+              root.nextDay()
+            }
+            event.accepted = true
+            return
+          }
+
+          if (event.key === Qt.Key_Space) {
+            root.toggleSelectedTask()
             event.accepted = true
             return
           }
@@ -532,6 +650,11 @@ Item {
           }
           if ((t === "a" || t === "A") && root.drawerOpen) {
             root.sendNotYetToToday()
+            event.accepted = true
+            return
+          }
+          if ((t === "r" || t === "R") && (root.signedIn || root.demoMode)) {
+            root.toggleRollOver()
             event.accepted = true
             return
           }
@@ -621,13 +744,33 @@ Item {
               text: root.composing
                     ? "enter save  ·  esc cancel"
                     : (root.drawerOpen
-                      ? "n add  ·  a today  ·  del remove  ·  ↑ ↓  ·  y/esc close  ·  ?"
+                      ? "n add  ·  a today  ·  j/k  ·  K/J move  ·  y/esc close  ·  ?"
                       : ((!root.signedIn && !root.demoMode)
                         ? "← → day  ·  l local  ·  a sign in  ·  y not yet  ·  t today  ·  esc close  ·  ?"
-                        : "← → day  ·  n add  ·  del remove  ·  y not yet  ·  t today  ·  esc close  ·  ?"))
+                        : "h/l day  ·  j/k list  ·  space tick  ·  K/J move  ·  n add  ·  r roll  ·  y  ·  ?"))
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
+            }
+
+            Text {
+              visible: (root.signedIn || root.demoMode) && !root.drawerOpen
+              width: parent.width
+              text: root.rollOver
+                    ? "Roll unfinished to today · on  (r)"
+                    : "Roll unfinished to today · off  (r)"
+              color: root.rollOver ? root.accent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.underline: true
+
+              MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                hoverEnabled: true
+                z: 40
+                onClicked: root.toggleRollOver()
+              }
             }
 
             Text {
@@ -701,6 +844,11 @@ Item {
             selectedBackground: root.selectedBackground
             selectedText: root.selectedText
             fontFamily: root.fontFamily
+            onToggleRequested: root.toggleTaskById(taskId)
+            onMoveRequested: root.moveTaskById(taskId, delta)
+            onRowClicked: {
+              if (keyCatcher) keyCatcher.forceActiveFocus()
+            }
           }
 
           // New-task composer — n on the day or in the Not Yet drawer.
@@ -781,6 +929,7 @@ Item {
           onRequestFocus: {
             if (keyCatcher) keyCatcher.forceActiveFocus()
           }
+          onMoveRequested: root.moveTaskById(taskId, delta)
         }
 
         // Lightweight shortcuts help overlay inside the card.
@@ -823,10 +972,10 @@ Item {
               Text {
                 width: parent.width
                 text: root.drawerOpen
-                      ? "n       add a Not Yet task\na       move highlighted task to today\nDelete  remove highlighted Not Yet task\n↑ / ↓   move in Not Yet\ny / Esc close the drawer\n?       this help"
+                      ? "n       add a Not Yet task\na       move highlighted task to today\nj / k   move in Not Yet (or ↑ / ↓)\nK / J   move highlighted task up / down\nDelete  remove highlighted Not Yet task\ny / Esc close the drawer\n?       this help"
                       : ((!root.signedIn && !root.demoMode)
-                        ? "← / →   previous / next day\nl       use locally on this machine\na       sign in with peponi.to\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help"
-                        : "← / →   previous / next day\nn       add a task on this day\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\n↑ / ↓   move in list\nEsc     close drawer, then overlay\n?       this help")
+                        ? "← / →   previous / next day\nl       use locally on this machine\na       sign in with peponi.to\ny       toggle Not Yet drawer\nt       jump to today\nj / k   move in list\nEsc     close drawer, then overlay\n?       this help"
+                        : "h / l   previous / next day (also ← / →)\nj / k   move in list (also ↑ / ↓)\nSpace   tick / untick highlighted task\nK / J   move highlighted task up / down\nn       add a task on this day\nr       roll unfinished tasks to today\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\nEsc     close drawer, then overlay\n?       this help")
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.body

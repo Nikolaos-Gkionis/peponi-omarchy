@@ -35,6 +35,11 @@ say "==> Copied $PROJECT → $PLUGIN_DST"
 
 omarchy plugin validate "$PLUGIN_DST" || fail "installed copy failed validation"
 
+BIN_DST="${XDG_BIN_HOME:-$HOME/.local/bin}/peponi"
+mkdir -p "$(dirname "$BIN_DST")"
+install -m 755 "$PROJECT/bin/peponi" "$BIN_DST"
+say "==> CLI → $BIN_DST"
+
 if command -v omarchy-shell >/dev/null 2>&1; then
   omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
 fi

@@ -39,6 +39,7 @@ Item {
   }
 
   signal requestFocus()
+  signal moveRequested(var taskId, int delta)
 
   function resetCursor() {
     selectedIndex = 0
@@ -65,6 +66,19 @@ Item {
     selectedIndex = index
     cursorActive = true
     requestFocus()
+  }
+
+  function selectById(id) {
+    if (!items || id === undefined || id === null) return false
+    var want = String(id)
+    for (var i = 0; i < items.length; i++) {
+      if (items[i] && String(items[i].id) === want) {
+        selectedIndex = i
+        cursorActive = true
+        return true
+      }
+    }
+    return false
   }
 
   onItemsChanged: {
@@ -133,7 +147,7 @@ Item {
 
         Text {
           anchors.verticalCenter: parent.verticalCenter
-          text: "n add · a today · del remove · ↑ ↓ · y/esc close"
+          text: "n add · a today · j/k · K/J move · y/esc close"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -192,8 +206,11 @@ Item {
                 : "transparent"
 
               MouseArea {
+                id: nyHover
                 anchors.fill: parent
                 z: 2
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
                 onClicked: root.selectIndex(index)
               }
 
@@ -215,7 +232,7 @@ Item {
                 }
 
                 Column {
-                  width: parent.width - Style.space(36)
+                  width: parent.width - Style.space(72)
                   spacing: Style.space(2)
 
                   Text {
@@ -239,6 +256,49 @@ Item {
                     font.family: root.fontFamily
                     font.pixelSize: Style.font.caption
                     elide: Text.ElideRight
+                  }
+                }
+
+                Row {
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(4)
+                  visible: nyHover.containsMouse || (root.cursorActive && root.selectedIndex === index)
+                  z: 6
+
+                  Text {
+                    text: "↑"
+                    color: root.accent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+
+                    MouseArea {
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(6)
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.selectIndex(index)
+                        root.moveRequested(row.id, -1)
+                      }
+                    }
+                  }
+
+                  Text {
+                    text: "↓"
+                    color: root.accent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+
+                    MouseArea {
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(6)
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.selectIndex(index)
+                        root.moveRequested(row.id, 1)
+                      }
+                    }
                   }
                 }
               }

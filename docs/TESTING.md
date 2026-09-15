@@ -10,6 +10,9 @@ export PEPONI_DATA_DIR="$(mktemp -d)"
 peponi auth local
 peponi auth status --json
 peponi add $(date +%F) "Buy milk"
+peponi tick $(peponi day $(date +%F) --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["tasks"][0]["id"])')
+peponi move 1 down
+peponi pref roll-over off
 peponi day $(date +%F) --json
 peponi rm 1
 peponi not-yet --json
@@ -26,6 +29,9 @@ Checklist:
 - [ ] Overlay with no credentials shows **Use locally (l)** and **Sign in (a)**
 - [ ] `l` (or the local link) starts local mode without a terminal
 - [ ] `n` then Enter adds a task; it is still there after `omarchy restart shell`
+- [ ] Click the checkbox (or `j`/`k` then `Space`) to tick; unfinished stay at the top
+- [ ] Click `↑`/`↓` (or `K`/`J`) to reorder within unfinished or within done
+- [ ] `r` toggles rolling unfinished tasks onto today
 - [ ] `↑` / `↓` then `Delete` removes the highlighted task
 - [ ] Data file exists at `~/.local/share/peponi/store.json`
 
@@ -87,6 +93,9 @@ Checklist:
 - [ ] `peponi pull` refreshes that copy
 - [ ] `peponi auth login --cloud` keeps talking to peponi.to (only if you want live hosting)
 - [ ] `n` opens composer; Enter adds a task
+- [ ] Click checkbox or `Space` ticks; unfinished stay at the top
+- [ ] Click `↑`/`↓` or `K`/`J` reorders
+- [ ] `r` (or the roll-over line) toggles unfinished → today; paid pull copies `roll_over` from the API
 - [ ] Local add does not appear on the website; `--cloud` add does
 - [ ] `↑` / `↓` then `Delete` removes the highlighted task
 - [ ] `←` / `→` change day and reload

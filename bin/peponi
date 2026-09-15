@@ -160,7 +160,8 @@ args = sys.argv[3:]
 def empty_store():
     # next_id is a counter so every task gets a unique integer id
     # (the overlay's Delete key needs that id).
-    return {"next_id": 1, "days": {}, "not_yet": []}
+    # roll_over matches peponi.to: unfinished past tasks move to today.
+    return {"next_id": 1, "days": {}, "not_yet": [], "prefs": {"roll_over": True}}
 
 
 def load():
@@ -171,7 +172,55 @@ def load():
     data.setdefault("next_id", 1)
     data.setdefault("days", {})
     data.setdefault("not_yet", [])
+    prefs = data.setdefault("prefs", {})
+    if "roll_over" not in prefs:
+        prefs["roll_over"] = True
     return data
+
+
+def is_done(task):
+    return bool(task.get("completed") or task.get("done"))
+
+
+# Website Focus column: unfinished first, then ticked, each group keeping order.
+def sort_unfinished_first(tasks):
+    open_tasks = [t for t in tasks if not is_done(t)]
+    done_tasks = [t for t in tasks if is_done(t)]
+    return open_tasks + done_tasks
+
+
+# Same rule as DashboardController: if the user wants it, unfinished
+# tasks from earlier days land on today when we read the day list.
+def apply_roll_over(data, today):
+    if not data.get("prefs", {}).get("roll_over", True):
+        return False
+    moved = False
+    today_tasks = list(data["days"].get(today) or [])
+    for date in list(data["days"].keys()):
+        if date >= today:
+            continue
+        kept = []
+        for task in data["days"].get(date) or []:
+            if is_done(task):
+                kept.append(task)
+            else:
+                today_tasks.append(task)
+                moved = True
+        data["days"][date] = kept
+    if moved:
+        data["days"][today] = sort_unfinished_first(today_tasks)
+    return moved
+
+
+def find_task_container(data, tid):
+    for date, tasks in data["days"].items():
+        for task in tasks:
+            if same_id(task, tid):
+                return ("day", date, tasks, task)
+    for task in data["not_yet"]:
+        if same_id(task, tid):
+            return ("not_yet", None, data["not_yet"], task)
+    return None
 
 
 def save(data):
@@ -209,8 +258,15 @@ if op == "init":
 
 if op == "day":
     date = args[0]
+    today = args[1] if len(args) > 1 else date
     data = load()
-    print(json.dumps({"date": date, "tasks": data["days"].get(date, [])}))
+    if date == today and apply_roll_over(data, today):
+        save(data)
+    print(json.dumps({
+        "date": date,
+        "tasks": sort_unfinished_first(data["days"].get(date, [])),
+        "prefs": data.get("prefs") or {"roll_over": True},
+    }))
     raise SystemExit(0)
 
 if op == "add":
@@ -220,6 +276,7 @@ if op == "add":
     data["next_id"] = tid + 1
     row = task_row(tid, title)
     data["days"].setdefault(date, []).append(row)
+    data["days"][date] = sort_unfinished_first(data["days"][date])
     save(data)
     print(json.dumps({"ok": True, "task": row, "date": date}))
     raise SystemExit(0)
@@ -271,8 +328,68 @@ if op == "to_day":
         raise SystemExit(1)
     data["not_yet"] = kept
     data["days"].setdefault(date, []).append(found)
+    data["days"][date] = sort_unfinished_first(data["days"][date])
     save(data)
     print(json.dumps({"ok": True, "task": found, "date": date}))
+    raise SystemExit(0)
+
+if op == "tick":
+    # Flip completed. Unfinished stay at the top of that day (website rule).
+    tid = args[0]
+    data = load()
+    found = find_task_container(data, tid)
+    if found is None:
+        print(json.dumps({"ok": False, "error": "task not found"}))
+        raise SystemExit(1)
+    kind, date, tasks, task = found
+    task["completed"] = not is_done(task)
+    if len(args) > 1 and args[1].lower() in ("on", "off", "true", "false", "1", "0"):
+        task["completed"] = args[1].lower() in ("on", "true", "1")
+    if kind == "day":
+        data["days"][date] = sort_unfinished_first(tasks)
+    save(data)
+    print(json.dumps({"ok": True, "task": task, "date": date}))
+    raise SystemExit(0)
+
+if op == "move":
+    # Swap with the neighbour in the same unfinished/done group.
+    tid, direction = args[0], args[1]
+    delta = -1 if direction == "up" else 1
+    data = load()
+    found = find_task_container(data, tid)
+    if found is None:
+        print(json.dumps({"ok": False, "error": "task not found"}))
+        raise SystemExit(1)
+    kind, date, tasks, task = found
+    visual = sort_unfinished_first(tasks)
+    idx = next((i for i, row in enumerate(visual) if same_id(row, tid)), None)
+    other = None if idx is None else idx + delta
+    if idx is None or other < 0 or other >= len(visual):
+        print(json.dumps({"ok": True, "task": task, "moved": False, "date": date}))
+        raise SystemExit(0)
+    if is_done(visual[idx]) != is_done(visual[other]):
+        # Do not mix unfinished with ticked rows.
+        print(json.dumps({"ok": True, "task": task, "moved": False, "date": date}))
+        raise SystemExit(0)
+    visual[idx], visual[other] = visual[other], visual[idx]
+    if kind == "day":
+        data["days"][date] = visual
+    else:
+        data["not_yet"] = visual
+    save(data)
+    print(json.dumps({"ok": True, "task": visual[other], "moved": True, "date": date}))
+    raise SystemExit(0)
+
+if op == "pref":
+    data = load()
+    prefs = data.setdefault("prefs", {"roll_over": True})
+    if args:
+        key = args[0]
+        if key == "roll_over" and len(args) > 1:
+            prefs["roll_over"] = args[1].lower() in ("1", "true", "on", "yes")
+            data["prefs"] = prefs
+            save(data)
+    print(json.dumps({"ok": True, "prefs": prefs}))
     raise SystemExit(0)
 
 if op == "not_yet":
@@ -359,9 +476,13 @@ if op == "import":
             rebuilt_ny.append(row)
 
     data = empty_store()
-    data["days"] = rebuilt_days
+    data["days"] = {d: sort_unfinished_first(rows) for d, rows in rebuilt_days.items()}
     data["not_yet"] = rebuilt_ny
     data["next_id"] = next_id
+    # Paid snapshot carries the website roll-unfinished setting when present.
+    user = payload.get("user") or {}
+    if "roll_over" in user:
+        data["prefs"]["roll_over"] = bool(user.get("roll_over"))
     save(data)
     print(json.dumps({
         "ok": True,
@@ -378,11 +499,18 @@ PY
 
 local_status_json() {
   python3 - "$PEPONI_STORE" "$PEPONI_CREDENTIALS" <<'PY'
-import json, os, sys
+import json, sys
 store, creds_path = sys.argv[1], sys.argv[2]
 email = "this machine"
 try:
     email = json.load(open(creds_path)).get("email") or email
+except Exception:
+    pass
+prefs = {"roll_over": True}
+try:
+    prefs = json.load(open(store)).get("prefs") or prefs
+    if "roll_over" not in prefs:
+        prefs["roll_over"] = True
 except Exception:
     pass
 print(json.dumps({
@@ -393,6 +521,7 @@ print(json.dumps({
         "app_title": "Peponi",
         "not_yet_panel_title": "Not Yet",
     },
+    "prefs": prefs,
     "store": store,
 }))
 PY
@@ -688,7 +817,7 @@ cmd_day() {
     die "not set up — run: peponi auth local   or   peponi auth login"
   fi
   if [[ "$mode" == "local" ]]; then
-    print_or_json 200 "$(store_op day "$date")"
+    print_or_json 200 "$(store_op day "$date" "$(date +%F)")"
     return
   fi
 
@@ -813,6 +942,177 @@ t=d.get("task") or {}
 print("Moved \"%s\" to %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("id") or "?"))
 ' "$date" <<<"$body"
 }
+# Toggle completed on a task (day list or Not Yet).
+# Usage: peponi tick ID [on|off]
+cmd_tick() {
+  need_cmd python3
+  local id="${1:-}" state="${2:-}"
+  [[ -n "$id" ]] || die "usage: peponi tick ID [on|off]"
+  [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from peponi day --json)"
+
+  local extra=()
+  if [[ "$state" == "on" || "$state" == "off" ]]; then
+    extra=("$state")
+  elif [[ -n "$state" ]]; then
+    die "usage: peponi tick ID [on|off]"
+  fi
+
+  ensure_store
+  local mode body=""
+  mode="$(effective_mode)"
+
+  if [[ "$mode" == "cloud" ]]; then
+    [[ ${#extra[@]} -eq 1 ]] || die "usage: peponi tick ID on|off"
+    need_cmd curl
+    local completed payload resp code
+    completed="$([[ "$state" == "on" ]] && echo true || echo false)"
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"completed": sys.argv[1]=="true"}))' "$completed")"
+    resp="$(api_curl PATCH "/api/v1/todos/$id" --auth --data "$payload")"
+    code="${resp%%$'\n'*}"
+    body="${resp#*$'\n'}"
+    if [[ ! "$code" =~ ^2 ]]; then
+      printf 'peponi: tick failed (HTTP %s)\n' "$code" >&2
+      exit 1
+    fi
+  elif body="$(store_op tick "$id" "${extra[@]}")"; then
+    :
+  else
+    printf 'peponi: tick failed — task %s not found\n' "$id" >&2
+    exit 1
+  fi
+
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  python3 -c 'import json,sys
+d=json.load(sys.stdin)
+t=d.get("task") or {}
+state = "done" if t.get("completed") else "open"
+print("Ticked \"%s\" → %s (id %s)" % (t.get("title") or "", state, t.get("id") or "?"))
+' <<<"$body"
+}
+
+# Move a task up or down inside its unfinished/done group.
+# Usage: peponi move ID up|down [YYYY-MM-DD]
+cmd_move() {
+  need_cmd python3
+  local id="${1:-}" dir="${2:-}" date="${3:-}"
+  [[ -n "$id" && ( "$dir" == "up" || "$dir" == "down" ) ]] || die "usage: peponi move ID up|down [YYYY-MM-DD]"
+  [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number"
+
+  ensure_store
+  local mode body=""
+  mode="$(effective_mode)"
+
+  if [[ "$mode" == "cloud" ]]; then
+    [[ -n "$date" ]] || date="$(date +%F)"
+    need_cmd curl
+    local resp code day_json tmp
+    resp="$(api_curl GET "/api/v1/days/$date" --auth)"
+    code="${resp%%$'\n'*}"
+    day_json="${resp#*$'\n'}"
+    [[ "$code" =~ ^2 ]] || die "could not load $date to move that task"
+    tmp="$(mktemp)"
+    printf '%s' "$day_json" > "$tmp"
+    body="$(python3 - "$tmp" "$id" "$dir" <<'PY'
+import json, sys
+path, tid, direction = sys.argv[1], sys.argv[2], sys.argv[3]
+data = json.load(open(path))
+tasks = data.get("tasks") or []
+delta = -1 if direction == "up" else 1
+
+def done(t):
+    return bool(t.get("completed") or t.get("done"))
+
+def same(t):
+    try:
+        return int(t.get("id")) == int(tid)
+    except (TypeError, ValueError):
+        return str(t.get("id")) == str(tid)
+
+visual = [t for t in tasks if not done(t)] + [t for t in tasks if done(t)]
+idx = next((i for i, t in enumerate(visual) if same(t)), None)
+if idx is None:
+    sys.exit(1)
+other = idx + delta
+moved = False
+if 0 <= other < len(visual) and done(visual[idx]) == done(visual[other]):
+    visual[idx], visual[other] = visual[other], visual[idx]
+    moved = True
+    idx = other
+print(json.dumps({
+    "ok": True,
+    "moved": moved,
+    "date": data.get("date"),
+    "todo_ids": [t.get("id") for t in visual],
+    "task": visual[idx],
+}))
+PY
+)" || {
+      rm -f "$tmp"
+      printf 'peponi: move failed — task %s not found on %s\n' "$id" "$date" >&2
+      exit 1
+    }
+    rm -f "$tmp"
+    local ids payload
+    ids="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("todo_ids") or []))' <<<"$body")"
+    payload="$(python3 -c 'import json,sys; print(json.dumps({"todo_ids": json.loads(sys.argv[1])}))' "$ids")"
+    resp="$(api_curl PATCH "/api/v1/days/$date/reorder" --auth --data "$payload")"
+    code="${resp%%$'\n'*}"
+    if [[ ! "$code" =~ ^2 ]]; then
+      printf 'peponi: move failed (HTTP %s)\n' "$code" >&2
+      exit 1
+    fi
+  elif body="$(store_op move "$id" "$dir")"; then
+    :
+  else
+    printf 'peponi: move failed — task %s not found\n' "$id" >&2
+    exit 1
+  fi
+
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  python3 -c 'import json,sys
+d=json.load(sys.stdin)
+t=d.get("task") or {}
+moved = "moved" if d.get("moved") else "already at the end"
+print("%s \"%s\" %s (id %s)" % (sys.argv[1], t.get("title") or "", moved, t.get("id") or "?"))
+' "$dir" <<<"$body"
+}
+
+# Read or set local prefs. Keyboard-only users can toggle roll-over here too.
+# Usage: peponi pref [--json]
+#        peponi pref roll-over [on|off] [--json]
+cmd_pref() {
+  need_cmd python3
+  local key="${1:-}" value="${2:-}"
+  ensure_store
+  local body
+  if [[ -z "$key" ]]; then
+    body="$(store_op pref)"
+  elif [[ "$key" == "roll-over" || "$key" == "roll_over" ]]; then
+    if [[ -n "$value" ]]; then
+      body="$(store_op pref roll_over "$value")"
+    else
+      body="$(store_op pref)"
+    fi
+  else
+    die "usage: peponi pref [roll-over on|off]"
+  fi
+
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  python3 -c 'import json,sys
+p=(json.load(sys.stdin).get("prefs") or {})
+print("Roll unfinished tasks to today: %s" % ("on" if p.get("roll_over", True) else "off"))
+' <<<"$body"
+}
+
 # Usage: peponi add [YYYY-MM-DD] TITLE...
 cmd_add() {
   need_cmd python3
@@ -925,7 +1225,11 @@ Usage:
   peponi not-yet add TITLE [--json]
   peponi not-yet today ID [YYYY-MM-DD] [--json]
   peponi add [YYYY-MM-DD] TITLE [--json]
+  peponi tick ID [--json]
+  peponi move ID up|down [--json]
   peponi rm ID [--json]
+  peponi pref [--json]
+  peponi pref roll-over on|off [--json]
   peponi help
 
 Environment:
@@ -967,6 +1271,15 @@ main() {
         cmd_add "${args[@]}"
       else
         cmd_add
+      fi
+      ;;
+    tick|complete|toggle) cmd_tick "${args[0]:-}" "${args[1]:-}" ;;
+    move) cmd_move "${args[0]:-}" "${args[1]:-}" "${args[2]:-}" ;;
+    pref|prefs)
+      if ((${#args[@]} > 0)); then
+        cmd_pref "${args[@]}"
+      else
+        cmd_pref
       fi
       ;;
     rm|remove|delete) cmd_rm "${args[0]:-}" ;;

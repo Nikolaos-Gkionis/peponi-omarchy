@@ -48,16 +48,23 @@ Right-click the bar icon to refresh day data.
 
 | Key | Action |
 |-----|--------|
-| `←` / `→` | Previous / next day |
+| `h` / `l` or `←` / `→` | Previous / next day |
+| `j` / `k` or `↑` / `↓` | Move highlight in the list |
+| `Space` | Tick / untick the highlighted task |
+| `K` / `J` | Move the highlighted task up / down |
 | `n` | Add a task (on this day, or in Not Yet if the drawer is open) |
 | `Delete` / `Backspace` | Remove the highlighted task (day list, or Not Yet if the drawer is open) |
-| `y` | Toggle Not Yet drawer — then `n` / `a` / `Delete` / `↑` `↓` apply there |
+| `r` | Toggle rolling unfinished tasks onto today |
+| `y` | Toggle Not Yet drawer — then `n` / `a` / `Delete` / `j` `k` / `K` `J` apply there |
 | `a` | **Drawer open:** move the highlighted Not Yet task onto **today**. **Drawer closed** and not set up yet: sign in with peponi.to |
 | `t` | Jump to today |
-| `l` | Use locally on this machine (only when not set up yet) |
-| `↑` / `↓` | Move in the list |
+| `l` | Use locally on this machine (only when not set up yet). Once set up, `l` is next day |
 | `Esc` | Close composer / drawer, then overlay |
 | `?` | Shortcuts help |
+
+Mouse: click the checkbox to tick, click `↑` / `↓` on a row to reorder, click **Roll unfinished to today** to toggle.
+
+Unfinished tasks stay at the top (same as peponi.to). If roll-over is on — the website default, and whatever you last saved on peponi.to after a paid sign-in — opening **today** moves leftover unfinished tasks forward. Local-only users toggle that with `r` or `peponi pref roll-over on|off`.
 
 ### Not Yet (press `y`)
 
@@ -78,6 +85,8 @@ CLI equivalent of step 4: `peponi not-yet today ID`.
 | `Super + Alt + O` | Toggle overlay |
 | `Super + Alt + ←/→` | Change day |
 | `Super + Alt + Y` | Toggle Not Yet |
+| `Super + Alt + Space` | Tick the highlighted task |
+| `Super + Alt + K` / `J` | Move the highlighted task up / down |
 
 Install later with:
 
@@ -102,6 +111,9 @@ peponi pull                    # refresh the copy from peponi.to
 peponi auth status --json
 peponi day $(date +%F) --json
 peponi add $(date +%F) "Buy milk"
+peponi tick ID
+peponi move ID up
+peponi pref roll-over on
 peponi rm ID
 peponi not-yet --json
 peponi not-yet add "Call mum"
