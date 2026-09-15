@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Remove Peponi Omarchy helper plugin + optional CLI. Does not delete peponi.to account.
+# Remove Peponi Omarchy helper plugin + optional CLI. Does not delete instance accounts.
 set -euo pipefail
 
 PLUGIN_ID="peponi.one-day"

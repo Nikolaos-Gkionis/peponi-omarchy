@@ -1,6 +1,6 @@
 # How to use Peponi One Day on Omarchy
 
-Use it **locally** (no account) or sign in with a **paid** [peponi.to](https://peponi.to) license so we can copy your tasks onto this machine. After that, Omarchy does not use peponi.to as a live database.
+Use it **locally** (no account) or sign in to **any Peponi instance** — a free hosted week on [peponi.to](https://peponi.to), or a clone you run from [source](https://github.com/Nikolaos-Gkionis/todo_app). Default login copies tasks onto this machine so they remain after the hosted week ends.
 
 ![Peponi One Day on Omarchy](screenshot.png)
 
@@ -22,14 +22,14 @@ Setup offers two options:
 
 | Choice | What it does |
 |--------|----------------|
-| **Use locally** | No peponi.to account. Tasks stay on this machine in `~/.local/share/peponi/store.json`. |
-| **Sign in** | Paid peponi.to email and password. Trial-only accounts are rejected. We copy your existing tasks onto this machine; new work stays local. |
+| **Use locally** | No account. Tasks stay on this machine in `~/.local/share/peponi/store.json`. |
+| **Sign in** | Email and password for peponi.to (hosted week) or `--url` for your instance. We copy existing tasks here; new work can stay local. Hosted accounts are removed after the week. |
 
 Press Enter at the numbered prompt to pick **local**. Skip the prompt in scripts with `PEPONI_SETUP_MODE=local` or `PEPONI_SETUP_MODE=cloud`.
 
 If you skip setup, the overlay still asks: `l` = local, `a` = sign in (opens a terminal). After you are set up — or while **Not Yet** is open — `a` means “put this inbox task on today”.
 
-Local Rails while developing a paid sign-in:
+Any instance (self-hosted or Rails on localhost):
 
 ```bash
 export PEPONI_BASE_URL=http://127.0.0.1:3000
@@ -56,7 +56,7 @@ Right-click the bar icon to refresh day data.
 | `Delete` / `Backspace` | Remove the highlighted task (day list, or Not Yet if the drawer is open) |
 | `r` | Toggle rolling unfinished tasks onto today |
 | `y` | Toggle Not Yet drawer — then `n` / `a` / `Delete` / `j` `k` / `K` `J` apply there |
-| `a` | **Drawer open:** move the highlighted Not Yet task onto **today**. **Drawer closed** and not set up yet: sign in with peponi.to |
+| `a` | **Drawer open:** move the highlighted Not Yet task onto **today**. **Drawer closed** and not set up yet: sign in to an instance |
 | `t` | Jump to today |
 | `l` | Use locally on this machine (only when not set up yet). Once set up, `l` is next day |
 | `Esc` | Close composer / drawer, then overlay |
@@ -64,7 +64,7 @@ Right-click the bar icon to refresh day data.
 
 Mouse: click the checkbox to tick, click `↑` / `↓` on a row to reorder, click **Roll unfinished to today** to toggle.
 
-Unfinished tasks stay at the top (same as peponi.to). If roll-over is on — the website default, and whatever you last saved on peponi.to after a paid sign-in — opening **today** moves leftover unfinished tasks forward. Local-only users toggle that with `r` or `peponi pref roll-over on|off`.
+Unfinished tasks stay at the top (same as the website). If roll-over is on — the instance default, copied on sign-in — opening **today** moves leftover unfinished tasks forward. Local-only users toggle that with `r` or `peponi pref roll-over on|off`.
 
 ### Not Yet (press `y`)
 
@@ -106,8 +106,9 @@ omarchy bar put peponi.one-day --section right
 
 ```bash
 peponi auth local              # this machine only
-peponi auth login              # paid license, copy tasks here
-peponi pull                    # refresh the copy from peponi.to
+peponi auth login              # peponi.to or last-saved instance; copies tasks here
+peponi auth login --url URL    # self-hosted clone
+peponi pull                    # refresh the copy from the signed-in instance
 peponi auth status --json
 peponi day $(date +%F) --json
 peponi add $(date +%F) "Buy milk"
@@ -121,7 +122,7 @@ peponi not-yet today ID        # move that inbox task onto today
 peponi auth logout             # leave both; local files are kept
 ```
 
-Switch later with `peponi auth local` or `peponi auth login`. Paid sign-in copies your website tasks onto this machine; it does not keep a live two-way sync. `peponi auth login --cloud` is the exception (tasks stay on peponi.to).
+Switch later with `peponi auth local` or `peponi auth login --url …`. Sign-in copies website tasks onto this machine; it does not keep a live two-way sync unless you pass `--cloud`. Hosted peponi.to weeks end — pull, download the PWA, or self-host before the account is removed.
 
 ## 6. Uninstall
 
@@ -133,4 +134,4 @@ omarchy plugin remove peponi.one-day --yes
 
 After plugin code changes (`keepLoaded: true`), run `omarchy restart shell`.
 
-Marketing guide on the site: [peponi.to/how-to#omarchy](https://peponi.to/how-to#omarchy)
+App source and self-host instructions: [github.com/Nikolaos-Gkionis/todo_app](https://github.com/Nikolaos-Gkionis/todo_app). Site guide: [peponi.to/how-to#omarchy](https://peponi.to/how-to#omarchy)

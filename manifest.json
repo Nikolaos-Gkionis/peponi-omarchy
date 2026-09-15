@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "peponi.one-day",
   "name": "Peponi One Day",
-  "version": "0.5.0",
-  "author": "nikolaos",
+  "version": "0.6.0",
+  "author": "nikolaos-gkionis",
   "license": "MIT",
-  "description": "Focused one-day task view for Omarchy \u2014 use locally on this machine, or sync with a paid peponi.to account",
+  "description": "Focused one-day task view for Omarchy \u2014 local on this machine, or any Peponi instance",
   "homepage": "https://peponi.to",
   "repository": "https://github.com/Nikolaos-Gkionis/peponi-omarchy",
   "keywords": [

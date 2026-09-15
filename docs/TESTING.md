@@ -1,6 +1,6 @@
 # Testing — Peponi Omarchy helper
 
-## 1. Local mode (no peponi.to account)
+## 1. Local mode (no account)
 
 ```bash
 export PATH="$PWD/bin:$HOME/.local/bin:$PATH"
@@ -35,10 +35,10 @@ Checklist:
 - [ ] `↑` / `↓` then `Delete` removes the highlighted task
 - [ ] Data file exists at `~/.local/share/peponi/store.json`
 
-## 2. Rails API (peponi.to) — paid / cloud path
+## 2. Rails API — any instance (hosted week or self-host)
 
 ```bash
-# from todo_app root, with a paid user in DB
+# from todo_app root (self-host or local Rails)
 bin/rails s
 
 # login
@@ -87,15 +87,15 @@ omarchy-shell shell toggle peponi.one-day '{}'
 
 Checklist:
 
-- [ ] Signed-out overlay offers local **and** paid sign-in
+- [ ] Signed-out overlay offers local **and** instance sign-in
 - [ ] After `peponi auth local`, today’s list is editable with no website
-- [ ] After `peponi auth login`, a snapshot is copied locally (`peponi auth status` shows `"mode":"local"`)
+- [ ] After `peponi auth login --url …`, a snapshot is copied locally (`peponi auth status` shows `"mode":"local"`)
 - [ ] `peponi pull` refreshes that copy
-- [ ] `peponi auth login --cloud` keeps talking to peponi.to (only if you want live hosting)
+- [ ] `peponi auth login --cloud --url …` keeps talking to that instance
 - [ ] `n` opens composer; Enter adds a task
 - [ ] Click checkbox or `Space` ticks; unfinished stay at the top
 - [ ] Click `↑`/`↓` or `K`/`J` reorders
-- [ ] `r` (or the roll-over line) toggles unfinished → today; paid pull copies `roll_over` from the API
+- [ ] `r` (or the roll-over line) toggles unfinished → today; pull copies `roll_over` from the instance
 - [ ] Local add does not appear on the website; `--cloud` add does
 - [ ] `↑` / `↓` then `Delete` removes the highlighted task
 - [ ] `←` / `→` change day and reload
@@ -111,4 +111,4 @@ Cloud writes need the Rails add/remove routes **deployed** (`kamal deploy` in to
 ## 5. Handoff
 
 - No commit/new-repo from the agent — create the standalone repo yourself (see README).
-- Keep Rails `/api/v1` on peponi.to; keep `peponi-omarchy/` as the helper package.
+- Keep Rails `/api/v1` in todo_app (any instance); keep `peponi-omarchy/` as the helper package.

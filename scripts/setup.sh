@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Post-install for peponi.one-day: install CLI, choose local vs paid, optional binds.
+# Post-install for peponi.one-day: install CLI, choose local vs instance, optional binds.
 # Run after: omarchy plugin add <url> --enable
 # Or after: ./scripts/install.sh
 set -euo pipefail
@@ -7,6 +7,7 @@ set -euo pipefail
 PROJECT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
 PLUGIN_ID="peponi.one-day"
 BIN_DST="${XDG_BIN_HOME:-$HOME/.local/bin}/peponi"
+DEFAULT_URL="https://peponi.to"
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'setup.sh: %s\n' "$*" >&2; exit 1; }
@@ -23,8 +24,9 @@ case ":$PATH:" in
   *) say "    Tip: ensure $(dirname "$BIN_DST") is on your PATH" ;;
 esac
 
-# --- Choose local machine vs paid peponi.to --------------------------------
+# --- Choose local machine vs a Peponi instance -----------------------------
 # PEPONI_SETUP_MODE=local|cloud skips the prompt (useful for scripts).
+# PEPONI_SETUP_URL / PEPONI_BASE_URL pick the instance for cloud setup.
 
 auth_json() {
   "$BIN_DST" auth status --json 2>/dev/null || printf '{"authenticated":false,"mode":"none"}\n'
@@ -53,6 +55,29 @@ print(((d.get("user") or {}).get("email")) or "")
 ' <<<"$1"
 }
 
+ask_instance_url() {
+  if [[ -n "${PEPONI_SETUP_URL:-}" ]]; then
+    printf '%s\n' "$PEPONI_SETUP_URL"
+    return
+  fi
+  if [[ -n "${PEPONI_BASE_URL:-}" ]]; then
+    printf '%s\n' "$PEPONI_BASE_URL"
+    return
+  fi
+  local current=""
+  current="$("$BIN_DST" auth host --json 2>/dev/null | python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("instance") or "")
+except Exception:
+    print("")
+' 2>/dev/null || true)"
+  [[ -n "$current" ]] || current="$DEFAULT_URL"
+  printf "Instance URL [%s]: " "$current" >&2
+  local typed=""
+  read -r typed || true
+  printf '%s\n' "${typed:-$current}"
+}
+
 choose_setup_mode() {
   local current="$1"
   if [[ -n "${PEPONI_SETUP_MODE:-}" ]]; then
@@ -63,7 +88,7 @@ choose_setup_mode() {
   say ""
   if [[ "$current" == "local" ]]; then
     say "==> Already using local data on this machine"
-    printf "Sign in with a paid peponi.to account instead? [y/N]: "
+    printf "Sign in to peponi.to or a self-hosted instance instead? [y/N]: "
     read -r switch || true
     if [[ "${switch:-}" =~ ^[Yy]$ ]]; then
       printf 'cloud\n'
@@ -74,7 +99,7 @@ choose_setup_mode() {
   fi
 
   if [[ "$current" == "cloud" ]]; then
-    say "==> Already signed in to peponi.to"
+    say "==> Already signed in to a Peponi instance"
     printf "Switch to local-only on this machine? [y/N]: "
     read -r switch || true
     if [[ "${switch:-}" =~ ^[Yy]$ ]]; then
@@ -91,7 +116,7 @@ choose_setup_mode() {
     # gum returns 1 if the user cancels — default to local so setup still finishes.
     choice="$(gum choose \
       "Use locally on this Omarchy machine (no account needed)" \
-      "Sign in with a paid peponi.to account" || true)"
+      "Sign in to peponi.to or a self-hosted instance" || true)"
     case "$choice" in
       Sign\ in*) printf 'cloud\n' ;;
       *) printf 'local\n' ;;
@@ -100,11 +125,11 @@ choose_setup_mode() {
   fi
 
   say "    1) Use locally on this Omarchy machine (no account needed)"
-  say "    2) Sign in with a paid peponi.to account"
+  say "    2) Sign in to peponi.to or a self-hosted instance"
   printf "Choice [1]: "
   read -r choice || true
   case "${choice:-1}" in
-    2|cloud|login|paid) printf 'cloud\n' ;;
+    2|cloud|login|host|hosted) printf 'cloud\n' ;;
     *) printf 'local\n' ;;
   esac
 }
@@ -125,15 +150,15 @@ case "$picked" in
     ;;
   cloud)
     say ""
-    say "==> Sign in to peponi.to (paid license, then copy tasks onto this machine)"
-    if [[ -n "${PEPONI_BASE_URL:-}" ]]; then
-      say "    PEPONI_BASE_URL=$PEPONI_BASE_URL"
-    fi
-    if "$BIN_DST" auth login; then
+    say "==> Sign in (hosted week on peponi.to, or your own instance)"
+    say "    After the hosted week, accounts are removed — pull or self-host first."
+    instance_url="$(ask_instance_url)"
+    say "    Instance: $instance_url"
+    if PEPONI_BASE_URL="$instance_url" "$BIN_DST" auth login --url "$instance_url"; then
       :
     else
       say "    sign-in failed — continuing with local mode so setup can finish"
-      say "    later: $BIN_DST auth login"
+      say "    later: $BIN_DST auth login --url $instance_url"
       "$BIN_DST" auth local
     fi
     ;;

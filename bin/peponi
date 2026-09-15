@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
-# peponi — desktop CLI for Omarchy (local store or paid peponi.to account).
+# peponi — desktop CLI for Omarchy (local store, or any Peponi instance).
 #
-# Two ways to use it:
+# Ways to use it:
 #   local  — tasks live on this machine (no account). peponi auth local
-#   cloud  — paid peponi.to login. peponi auth login
+#   login  — sign in to peponi.to (hosted week) or a self-hosted clone
+#
+# After a hosted week on peponi.to the account is removed. Copy tasks here
+# first (`peponi pull` / default login), then keep going locally or point
+# this CLI at the instance you run from source:
+#   https://github.com/Nikolaos-Gkionis/todo_app
 #
 # Cloud credentials: ~/.config/peponi/credentials.json (mode 0600)
-# Mode flag:          ~/.config/peponi/config.json
+# Mode + instance:    ~/.config/peponi/config.json
 # Local tasks:        ~/.local/share/peponi/store.json
-# Override API host with PEPONI_BASE_URL (default https://peponi.to).
+# Override API host with PEPONI_BASE_URL or: peponi auth login --url URL
 
 set -euo pipefail
 
@@ -18,6 +23,7 @@ PEPONI_CONFIG="${PEPONI_CONFIG:-$PEPONI_CONFIG_DIR/config.json}"
 PEPONI_DATA_DIR="${PEPONI_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/peponi}"
 PEPONI_STORE="${PEPONI_STORE:-$PEPONI_DATA_DIR/store.json}"
 DEFAULT_BASE_URL="https://peponi.to"
+SOURCE_REPO="https://github.com/Nikolaos-Gkionis/todo_app"
 
 json_mode=0
 for arg in "$@"; do
@@ -57,7 +63,79 @@ base_url() {
       return
     fi
   fi
+  local saved
+  saved="$(read_host)"
+  if [[ -n "$saved" ]]; then
+    echo "${saved%/}"
+    return
+  fi
   echo "$DEFAULT_BASE_URL"
+}
+
+# Turn "peponi.home" or "localhost:3000" into a usable API origin.
+normalize_instance_url() {
+  local u="${1:-}"
+  u="${u#"${u%%[![:space:]]*}"}"
+  u="${u%"${u##*[![:space:]]}"}"
+  u="${u%/}"
+  [[ -n "$u" ]] || return 1
+  if [[ ! "$u" =~ ^https?:// ]]; then
+    if [[ "$u" =~ ^localhost($|:) || "$u" =~ ^127\.0\.0\.1($|:) || "$u" =~ ^\[::1\]($|:) ]]; then
+      u="http://$u"
+    else
+      u="https://$u"
+    fi
+  fi
+  printf '%s\n' "${u%/}"
+}
+
+save_host() {
+  local url="$1"
+  mkdir -p "$PEPONI_CONFIG_DIR"
+  umask 077
+  python3 - "$PEPONI_CONFIG" "$url" <<'PY'
+import json, sys
+path, url = sys.argv[1], sys.argv[2]
+data = {}
+try:
+    with open(path) as f:
+        data = json.load(f) or {}
+except Exception:
+    data = {}
+if url:
+    data["base_url"] = url
+else:
+    data.pop("base_url", None)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+  chmod 600 "$PEPONI_CONFIG"
+}
+
+read_host() {
+  python3 -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("base_url") or "")
+except Exception:
+    print("")
+' "$PEPONI_CONFIG"
+}
+
+print_hosted_week_ended() {
+  cat >&2 <<EOF
+This hosted week on peponi.to has ended. Accounts (and tasks) are then removed.
+
+Keep going:
+  peponi pull && peponi auth local
+      copy tasks here while a saved login still works
+  peponi auth login --url https://YOUR-INSTANCE
+      sign in to a copy you run yourself (sync)
+
+Build from source:
+  $SOURCE_REPO
+EOF
 }
 
 read_token() {
@@ -126,7 +204,7 @@ except Exception:
 }
 
 # local wins even if leftover cloud credentials exist.
-# credentials with no local flag → cloud (so existing paid users keep working).
+# credentials with no local flag → cloud (any remembered instance).
 effective_mode() {
   local m
   m="$(read_mode)"
@@ -142,7 +220,7 @@ effective_mode() {
 }
 
 # Always keep a local JSON file so Not Yet can persist on Omarchy
-# even when peponi.to is unreachable or the write API is not deployed.
+# even when the instance is unreachable or the write API is not deployed.
 ensure_store() {
   store_op init >/dev/null
 }
@@ -160,7 +238,7 @@ args = sys.argv[3:]
 def empty_store():
     # next_id is a counter so every task gets a unique integer id
     # (the overlay's Delete key needs that id).
-    # roll_over matches peponi.to: unfinished past tasks move to today.
+    # roll_over matches the website: unfinished past tasks move to today.
     return {"next_id": 1, "days": {}, "not_yet": [], "prefs": {"roll_over": True}}
 
 
@@ -432,7 +510,7 @@ if op == "seed_not_yet":
     raise SystemExit(0)
 
 if op == "import":
-    # Replace the local file with a peponi.to snapshot (paid sign-in / peponi pull).
+    # Replace the local file with an instance snapshot (login / peponi pull).
     src = Path(args[0])
     payload = json.loads(src.read_text())
     days_in = payload.get("days") or {}
@@ -580,9 +658,10 @@ cmd_auth_local() {
   if [[ "$json_mode" -eq 1 ]]; then
     local_status_json
   else
-    printf 'Using local data on this machine (no peponi.to account).\n'
+    printf 'Using local data on this machine (no account).\n'
     printf 'Tasks are stored in %s\n' "$PEPONI_STORE"
-    printf 'To sync with peponi.to later, run: peponi auth login\n'
+    printf 'To copy from peponi.to or a self-hosted instance later:\n'
+    printf '  peponi auth login --url %s\n' "$DEFAULT_BASE_URL"
   fi
 }
 
@@ -590,25 +669,52 @@ cmd_auth_login() {
   need_cmd curl
   need_cmd python3
 
-  # Default: prove you paid, copy tasks onto this machine, then work locally.
-  # --cloud keeps talking to peponi.to (that means we host the todo list).
-  local live_cloud=0
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --cloud|--live) live_cloud=1 ;;
+  # Default: copy tasks onto this machine, then work locally (survives the
+  # hosted week ending). --cloud keeps a live connection to that instance.
+  local live_cloud=0 url_flag=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cloud|--live) live_cloud=1; shift ;;
+      --url|--host|--instance)
+        [[ -n "${2:-}" ]] || die "usage: peponi auth login --url URL"
+        url_flag="$2"
+        shift 2
+        ;;
+      --url=*|--host=*|--instance=*)
+        url_flag="${1#*=}"
+        shift
+        ;;
+      *) shift ;;
     esac
   done
 
   local email="${PEPONI_EMAIL:-}" password="${PEPONI_PASSWORD:-}"
-  local url
-  # A leftover credentials.json from local testing used to steal this URL
-  # (e.g. http://127.0.0.1:3000). Login itself should hit production unless
-  # the user explicitly set PEPONI_BASE_URL.
-  if [[ -z "${PEPONI_BASE_URL:-}" ]]; then
-    PEPONI_BASE_URL="$DEFAULT_BASE_URL"
+  local url="" default_url
+
+  if [[ -n "${url_flag}" ]]; then
+    url="$(normalize_instance_url "$url_flag")" || die "invalid --url"
+  elif [[ -n "${PEPONI_BASE_URL:-}" ]]; then
+    url="$(normalize_instance_url "$PEPONI_BASE_URL")" || die "invalid PEPONI_BASE_URL"
+  else
+    default_url="$(read_host)"
+    [[ -n "$default_url" ]] || default_url="$DEFAULT_BASE_URL"
+    if [[ "$json_mode" -eq 1 ]]; then
+      url="$(normalize_instance_url "$default_url")"
+    else
+      printf 'Instance URL [%s]: ' "$default_url" >&2
+      local typed=""
+      IFS= read -r typed || true
+      if [[ -n "${typed:-}" ]]; then
+        url="$(normalize_instance_url "$typed")" || die "invalid instance URL"
+      else
+        url="$(normalize_instance_url "$default_url")"
+      fi
+    fi
   fi
-  url="$(base_url)"
+  [[ -n "$url" ]] || die "instance URL required"
+  # So api_curl / base_url() hit this instance, not a leftover host.
+  PEPONI_BASE_URL="$url"
+  save_host "$url"
 
   if [[ -z "$email" ]]; then
     printf 'Peponi email: ' >&2
@@ -623,21 +729,28 @@ cmd_auth_login() {
   fi
   [[ -n "$email" && -n "$password" ]] || die "email and password required"
 
-  # Say which host we will hit so leftover credentials.json base_url is obvious.
   if [[ "$json_mode" -ne 1 ]]; then
     printf 'Signing in to %s as %s\n' "$url" "$email" >&2
-    printf '(override with PEPONI_BASE_URL; default is %s)\n' "$DEFAULT_BASE_URL" >&2
   fi
 
   local payload
   payload="$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' "$email" "$password")"
 
-  local resp code body
+  local resp code body err_code
   resp="$(api_curl POST /api/v1/auth/login --data "$payload")"
   code="${resp%%$'\n'*}"
   body="${resp#*$'\n'}"
+  err_code="$(python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("error") or "")
+except Exception:
+    print("")
+' <<<"$body")"
 
   if [[ "$code" != "200" ]]; then
+    if [[ "$err_code" == "hosted_week_ended" ]]; then
+      print_hosted_week_ended
+    fi
     if [[ "$json_mode" -eq 1 ]]; then
       printf '%s\n' "$body"
     else
@@ -660,7 +773,7 @@ cmd_auth_login() {
       mode="local"
       pulled=1
     else
-      # Older peponi.to without /api/v1/export — keep live API so paid login still works.
+      # Instance without /api/v1/export — stay live so login still works.
       save_mode cloud
       mode="cloud"
     fi
@@ -669,23 +782,43 @@ cmd_auth_login() {
   fi
 
   if [[ "$json_mode" -eq 1 ]]; then
-    python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["mode"]=sys.argv[1]; d["pulled"]=sys.argv[2]=="1"; d["credentials"]="saved"; print(json.dumps(d))' "$mode" "$pulled" <<<"$body"
+    python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["mode"]=sys.argv[1]; d["pulled"]=sys.argv[2]=="1"; d["instance"]=sys.argv[3]; d["credentials"]="saved"; print(json.dumps(d))' "$mode" "$pulled" "$url" <<<"$body"
   else
     printf 'Signed in as %s (%s)\n' "$email" "$url"
-    printf 'License saved to %s\n' "$PEPONI_CREDENTIALS"
+    printf 'Login saved to %s\n' "$PEPONI_CREDENTIALS"
     if [[ "$mode" == "local" ]]; then
-      printf 'Copied your peponi.to tasks onto this machine.\n'
-      printf 'New work stays in %s — peponi.to is not used as a live database.\n' "$PEPONI_STORE"
+      printf 'Copied tasks from that instance onto this machine.\n'
+      printf 'New work stays in %s.\n' "$PEPONI_STORE"
       printf 'Refresh the copy later with: peponi pull\n'
+      printf 'Hosted peponi.to weeks end — pull before the account is removed.\n'
     else
-      printf 'Live cloud mode — tasks stay on peponi.to while this account exists.\n'
+      printf 'Live mode — tasks stay on %s while that account exists.\n' "$url"
       printf 'To copy onto this machine instead: peponi pull && peponi auth local\n'
     fi
   fi
 }
 
-# Copy a snapshot from peponi.to into the local JSON file.
-# Used by paid login (default) and by `peponi pull`.
+cmd_auth_host() {
+  need_cmd python3
+  local raw="${1:-}"
+  if [[ -n "$raw" ]]; then
+    local url
+    url="$(normalize_instance_url "$raw")" || die "invalid instance URL"
+    save_host "$url"
+  fi
+  local url
+  url="$(base_url)"
+  if [[ "$json_mode" -eq 1 ]]; then
+    printf '{"ok":true,"instance":%s}\n' "$(json_escape "$url")"
+  else
+    printf 'Instance: %s\n' "$url"
+    printf 'Change with: peponi auth login --url URL\n'
+    printf 'Or:          peponi auth host URL\n'
+  fi
+}
+
+# Copy a snapshot from the signed-in instance into the local JSON file.
+# Used by login (default) and by `peponi pull`.
 # Returns 1 if the export endpoint is missing or auth fails — caller decides.
 cmd_pull_snapshot() {
   need_cmd curl
@@ -719,12 +852,12 @@ cmd_pull() {
     if [[ "$json_mode" -eq 1 ]]; then
       printf '{"ok":true,"mode":"local","store":%s}\n' "$(json_escape "$PEPONI_STORE")"
     else
-      printf 'Copied peponi.to tasks onto this machine.\n'
+      printf 'Copied tasks from %s onto this machine.\n' "$(base_url)"
       printf 'Store: %s\n' "$PEPONI_STORE"
       printf 'Daily work is local. Refresh again with: peponi pull\n'
     fi
   else
-    die "could not copy tasks — run peponi auth login first (paid account)"
+    die "could not copy tasks — run peponi auth login --url <instance> first"
   fi
 }
 
@@ -755,7 +888,7 @@ cmd_auth_logout() {
     else
       if [[ "$had_local" -eq 1 ]]; then
         printf 'Local mode turned off. Task data kept in %s\n' "$PEPONI_STORE"
-        printf 'Run peponi auth local to use it again, or peponi auth login for peponi.to.\n'
+        printf 'Run peponi auth local to use it again, or peponi auth login --url <instance>.\n'
       else
         printf 'Already signed out.\n'
       fi
@@ -784,7 +917,7 @@ cmd_auth_status() {
     else
       printf 'Not signed in.\n'
       printf 'Use locally:  peponi auth local\n'
-      printf 'Or peponi.to: peponi auth login\n'
+      printf 'Or an instance: peponi auth login --url %s\n' "$DEFAULT_BASE_URL"
     fi
     exit 0
   fi
@@ -795,10 +928,21 @@ cmd_auth_status() {
   code="${resp%%$'\n'*}"
   body="${resp#*$'\n'}"
   if [[ "$code" != "200" ]]; then
+    local err_code
+    err_code="$(python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("error") or "")
+except Exception:
+    print("")
+' <<<"$body")"
+    if [[ "$err_code" == "hosted_week_ended" ]]; then
+      print_hosted_week_ended
+    fi
     if [[ "$json_mode" -eq 1 ]]; then
-      printf '{"authenticated":false,"mode":"cloud","error":"token_rejected","http":%s}\n' "$code"
+      printf '{"authenticated":false,"mode":"cloud","error":%s,"http":%s}\n' \
+        "$(json_escape "${err_code:-token_rejected}")" "$code"
     else
-      printf 'Not authenticated (HTTP %s). Run: peponi auth login\n' "$code"
+      printf 'Not authenticated (HTTP %s). Run: peponi auth login --url <instance>\n' "$code"
     fi
     exit 1
   fi
@@ -843,7 +987,7 @@ cmd_not_yet() {
     return
   fi
 
-  # Not Yet on Omarchy is the local file. Optionally seed it once from peponi.to.
+  # Not Yet on Omarchy is the local file. Optionally seed it once from the instance.
   ensure_store
   local mode
   mode="$(effective_mode)"
@@ -867,7 +1011,7 @@ cmd_not_yet() {
 
 # Add an undated Inbox task (Not Yet drawer).
 # Always written to this machine so the overlay row cannot vanish on a
-# failed peponi.to request. Cloud POST is best-effort only.
+# failed instance request. Cloud POST is best-effort only.
 # Usage: peponi not-yet add TITLE...
 cmd_not_yet_add() {
   need_cmd python3
@@ -921,7 +1065,7 @@ cmd_not_yet_today() {
     exit 1
   }
 
-  # Paid/cloud day view reads peponi.to — copy the title onto that date too.
+  # Live instance day view — copy the title onto that date too.
   if [[ "$(effective_mode)" == "cloud" ]]; then
     local title payload resp
     title="$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("task") or {}).get("title") or "")' <<<"$body")"
@@ -1210,13 +1354,15 @@ usage() {
 peponi — Omarchy / desktop helper
 
 Use it in either way:
-  peponi auth local              tasks stay on this machine (no account)
-  peponi auth login              paid license, then copy tasks onto this machine
-  peponi auth login --cloud      keep using peponi.to as a live database
+  peponi auth local                         tasks stay on this machine (no account)
+  peponi auth login                         peponi.to hosted week, or any instance
+  peponi auth login --url https://HOST      self-hosted / your own clone
+  peponi auth login --cloud                 keep a live connection to that instance
 
 Usage:
   peponi auth local [--json]
-  peponi auth login [--cloud] [--json]
+  peponi auth login [--url URL] [--cloud] [--json]
+  peponi auth host [URL] [--json]
   peponi auth logout [--json]
   peponi auth status [--json]
   peponi pull [--json]
@@ -1232,8 +1378,11 @@ Usage:
   peponi pref roll-over on|off [--json]
   peponi help
 
+A hosted week on peponi.to ends; pull or download the PWA before the account
+is removed. Self-host from: https://github.com/Nikolaos-Gkionis/todo_app
+
 Environment:
-  PEPONI_BASE_URL     API host for sign-in / pull (default https://peponi.to)
+  PEPONI_BASE_URL     API host (default https://peponi.to, or last --url)
   PEPONI_EMAIL        Non-interactive login email
   PEPONI_PASSWORD     Non-interactive login password
   PEPONI_CONFIG_DIR   Config directory (default ~/.config/peponi)
@@ -1258,9 +1407,10 @@ main() {
       case "$sub" in
         local)  cmd_auth_local ;;
         login)  cmd_auth_login "${args[@]}" ;;
+        host|instance) cmd_auth_host "${args[0]:-}" ;;
         logout) cmd_auth_logout ;;
         status) cmd_auth_status ;;
-        *) die "usage: peponi auth <local|login|logout|status>" ;;
+        *) die "usage: peponi auth <local|login|host|logout|status>" ;;
       esac
       ;;
     pull) cmd_pull ;;

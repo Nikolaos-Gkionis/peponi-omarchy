@@ -48,7 +48,7 @@ omarchy plugin enable "$PLUGIN_ID" 2>/dev/null || omarchy plugin enable "$PLUGIN
 say "==> Enabled $PLUGIN_ID (Omarchy may ask for bar left/center/right)"
 
 say ""
-say "Next: run setup (CLI + choose local or paid sign-in):"
+say "Next: run setup (CLI + choose local or instance sign-in):"
 say "  $PLUGIN_DST/scripts/setup.sh"
 say "  # or from this checkout:"
 say "  $PROJECT/scripts/setup.sh"

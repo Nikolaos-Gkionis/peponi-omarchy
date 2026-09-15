@@ -2,9 +2,9 @@
 
 Keyboard-first **one-day** focus overlay for [Omarchy](https://omarchy.org/).
 
-Use it **locally on this machine** (no account) or sign in with a **paid** [peponi.to](https://peponi.to) license so we can copy your existing tasks here. After that, daily work stays on disk — peponi.to is not a live Omarchy database.
+Use it **locally on this machine** (no account) or sign in to **any Peponi instance** — a hosted week on [peponi.to](https://peponi.to), or a copy you run from [source](https://github.com/Nikolaos-Gkionis/todo_app). Default login copies your tasks onto this machine so they survive when the hosted week ends.
 
-Browse today with `h`/`l` (or arrows), tick with `Space` or a click, reorder with `K`/`J` or the row arrows, add with `n`, remove with `Delete`, open **Not Yet** with `y`, send a Not Yet task to today with `a`, jump to today with `t`. A small local `peponi` CLI stores tasks on disk, and can copy a snapshot from peponi.to when you sign in.
+Browse today with `h`/`l` (or arrows), tick with `Space` or a click, reorder with `K`/`J` or the row arrows, add with `n`, remove with `Delete`, open **Not Yet** with `y`, send a Not Yet task to today with `a`, jump to today with `t`. A small local `peponi` CLI stores tasks on disk, and can copy a snapshot from an instance when you sign in.
 
 ![Peponi One Day overlay](preview.png)
 
@@ -23,7 +23,7 @@ omarchy plugin add https://github.com/Nikolaos-Gkionis/peponi-omarchy.git --enab
 
 That clones into `~/.config/omarchy/plugins/peponi.one-day` and enables it. With `--enable`, Omarchy also asks where to put the **bar toggle** (left / center / right).
 
-Then finish setup (CLI + choose local or paid sign-in + optional keybindings):
+Then finish setup (CLI + choose local or instance sign-in + optional keybindings):
 
 ```bash
 ~/.config/omarchy/plugins/peponi.one-day/scripts/setup.sh
@@ -31,12 +31,12 @@ Then finish setup (CLI + choose local or paid sign-in + optional keybindings):
 
 Setup asks how you want to use it:
 
-1. **Use locally on this Omarchy machine** — no peponi.to account. Tasks live in `~/.local/share/peponi/store.json`.
-2. **Sign in with a paid peponi.to license** — email and password; trial-only accounts are rejected. We copy your existing tasks onto this machine. New work stays here (we are not a live cloud for Omarchy).
+1. **Use locally on this Omarchy machine** — no account. Tasks live in `~/.local/share/peponi/store.json`.
+2. **Sign in to an instance** — peponi.to for a free hosted week, or `--url https://your.host` for a self-hosted clone. We copy existing tasks onto this machine. Hosted accounts are removed after the week, so pull or self-host before then.
 
-You can also pick later in the overlay: `l` for local, `a` to sign in.
+You can also pick later in the overlay: `l` for local, `a` to sign in (the terminal asks for the instance URL).
 
-**Full walkthrough:** [docs/USAGE.md](docs/USAGE.md) · on the site: [peponi.to/how-to#omarchy](https://peponi.to/how-to#omarchy)
+**Full walkthrough:** [docs/USAGE.md](docs/USAGE.md) · app source: [github.com/Nikolaos-Gkionis/todo_app](https://github.com/Nikolaos-Gkionis/todo_app) · site: [peponi.to/how-to#omarchy](https://peponi.to/how-to#omarchy)
 
 Open it:
 
@@ -61,7 +61,7 @@ PEPONI_SETUP_MODE=local ./scripts/setup.sh
 PEPONI_SETUP_MODE=cloud ./scripts/setup.sh
 ```
 
-Point the CLI at a local Rails API while developing a paid sign-in:
+Point the CLI at any instance (self-hosted, or Rails on localhost):
 
 ```bash
 export PEPONI_BASE_URL=http://127.0.0.1:3000
@@ -71,15 +71,17 @@ PEPONI_SETUP_MODE=cloud ./scripts/setup.sh
 ## Requirements
 
 - Omarchy Linux (Quickshell + `omarchy` CLI)
-- `python3` (and `curl` only if you sign in to peponi.to)
-- Optional: a **paid** peponi.to account, if you want website sync
-- peponi.to `/api/v1` desktop endpoints (only for the paid/cloud path)
+- `python3` (and `curl` only if you sign in to an instance)
+- Optional: a Peponi account on peponi.to (hosted week) or on your own clone
+- Instance `/api/v1` desktop endpoints (only for the sign-in / sync path)
 
 ## After install
 
 ```bash
 peponi auth local          # this machine only, no account
-peponi auth login          # paid peponi.to account
+peponi auth login          # peponi.to or last-saved instance
+peponi auth login --url https://peponi.home
+peponi auth host           # show remembered instance URL
 peponi auth status --json
 peponi day $(date +%F) --json
 peponi add $(date +%F) "Buy milk"
@@ -95,7 +97,7 @@ peponi not-yet today ID
 - **Local mode:** `~/.local/share/peponi/store.json` (mode `0600`). Flag: `~/.config/peponi/config.json`.
 - **Cloud mode:** `~/.config/peponi/credentials.json` (mode `0600`).
 
-Switch anytime: `peponi auth local` or `peponi auth login` (copies a snapshot, then stays local). `peponi pull` refreshes the copy. `peponi auth login --cloud` keeps a live peponi.to connection. `peponi auth logout` leaves both and keeps local task files.
+Switch anytime: `peponi auth local` or `peponi auth login --url …` (copies a snapshot, then stays local). `peponi pull` refreshes the copy. `peponi auth login --cloud --url …` keeps a live connection to that instance. `peponi auth logout` leaves both and keeps local task files.
 
 ## Keybindings
 
@@ -143,7 +145,7 @@ omarchy plugin remove peponi.one-day --yes
 manifest.json          # Omarchy plugin contract (repo root)
 preview.png            # Plugin directory listing screenshot
 qml/                   # Overlay, Service, BarWidget, …
-bin/peponi             # CLI (local store or peponi.to)
+bin/peponi             # CLI (local store or any instance)
 scripts/install.sh     # Dev copy install
 scripts/setup.sh       # CLI + local-or-sign-in (+ optional binds)
 scripts/install-binding.sh
@@ -153,4 +155,4 @@ docs/
 
 ## Publishing this repo
 
-When you create the GitHub remote, the install line above works unchanged. Keep `preview.png` at the repository root so [plugins.omarchy.org](https://plugins.omarchy.org/) can show it on listing cards. The Rails `/api/v1` API lives in the peponi.to app — not in this repository. Local mode does not need that API.
+When you create the GitHub remote, the install line above works unchanged. Keep `preview.png` at the repository root so [plugins.omarchy.org](https://plugins.omarchy.org/) can show it on listing cards. The Rails app (any instance, including peponi.to) lives at [Nikolaos-Gkionis/todo_app](https://github.com/Nikolaos-Gkionis/todo_app). Local mode does not need that API.

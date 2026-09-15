@@ -1,5 +1,5 @@
 // Peponi One Day — date helpers + task shaping.
-// Live JSON comes from the peponi CLI (local store or peponi.to).
+// Live JSON comes from the peponi CLI (local store or any Peponi instance).
 // Demo data only when PEPONI_DEMO=1 (offline smoke).
 
 var WEEKDAYS_LONG = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]

@@ -11,7 +11,7 @@ import "Model.js" as Model
 //   Overlay.qml     = window + keys + day state
 //   DayView.qml     = task list for selectedDate
 //   BottomDrawer.qml = Not Yet slide-up (same window, not a 2nd layer-shell)
-//   Service.qml     = peponi CLI (local store on this machine, or paid peponi.to)
+//   Service.qml     = peponi CLI (local store, or any Peponi instance)
 Item {
   id: root
 
@@ -809,7 +809,7 @@ Item {
               Text {
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: "Sign in (a) — paid peponi.to license, copies your tasks onto this machine"
+                text: "Sign in (a) — peponi.to hosted week, or your own instance"
                 color: root.accent
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -974,7 +974,7 @@ Item {
                 text: root.drawerOpen
                       ? "n       add a Not Yet task\na       move highlighted task to today\nj / k   move in Not Yet (or ↑ / ↓)\nK / J   move highlighted task up / down\nDelete  remove highlighted Not Yet task\ny / Esc close the drawer\n?       this help"
                       : ((!root.signedIn && !root.demoMode)
-                        ? "← / →   previous / next day\nl       use locally on this machine\na       sign in with peponi.to\ny       toggle Not Yet drawer\nt       jump to today\nj / k   move in list\nEsc     close drawer, then overlay\n?       this help"
+                        ? "← / →   previous / next day\nl       use locally on this machine\na       sign in to an instance\ny       toggle Not Yet drawer\nt       jump to today\nj / k   move in list\nEsc     close drawer, then overlay\n?       this help"
                         : "h / l   previous / next day (also ← / →)\nj / k   move in list (also ↑ / ↓)\nSpace   tick / untick highlighted task\nK / J   move highlighted task up / down\nn       add a task on this day\nr       roll unfinished tasks to today\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\nEsc     close drawer, then overlay\n?       this help")
                 color: root.dim
                 font.family: root.fontFamily

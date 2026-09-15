@@ -7,7 +7,7 @@ import "Model.js" as Model
 // Shared engine for every bar / overlay instance.
 // Talks to the peponi CLI. Two modes:
 //   local — tasks in ~/.local/share/peponi/ (no account)
-//   cloud — paid peponi.to login (~/.config/peponi/credentials.json)
+//   cloud — any Peponi instance (~/.config/peponi/credentials.json)
 Item {
   id: root
 
@@ -177,7 +177,7 @@ Item {
     startPeponi(mutateProcess, ["move", String(id), dir, Model.keyForDate(selectedDate), "--json"])
   }
 
-  // Keyboard-only local users toggle this with `r`. Matches peponi.to roll_over.
+  // Keyboard-only local users toggle this with `r`. Matches instance roll_over.
   function setRollOver(enabled) {
     rollOver = enabled === true
     if (demoMode) return
