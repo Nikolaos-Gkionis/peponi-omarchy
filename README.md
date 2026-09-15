@@ -156,3 +156,9 @@ docs/
 ## Publishing this repo
 
 When you create the GitHub remote, the install line above works unchanged. Keep `preview.png` at the repository root so [plugins.omarchy.org](https://plugins.omarchy.org/) can show it on listing cards. The Rails app (any instance, including peponi.to) lives at [Nikolaos-Gkionis/todo_app](https://github.com/Nikolaos-Gkionis/todo_app). Local mode does not need that API.
+
+## License
+
+[MIT](LICENSE) — Copyright (c) 2026 Peponi.to / Nikolaos Gkionis.
+
+**Dependencies:** Omarchy (Quickshell + `omarchy` CLI), `python3`. `curl` only if you sign in to a Peponi instance. No extra packages. Local mode needs no account and no network.
