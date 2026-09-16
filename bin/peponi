@@ -150,16 +150,18 @@ save_credentials() {
   local token="$1" email="$2" url="$3" expires="${4:-}"
   mkdir -p "$PEPONI_CONFIG_DIR"
   umask 077
-  python3 - "$PEPONI_CREDENTIALS" "$token" "$email" "$url" "$expires" <<'PY'
+  # Token on stdin (not python argv) so it cannot be read from /proc/*/cmdline.
+  printf '%s\0%s\0%s\0%s' "$token" "$email" "$url" "$expires" | python3 -c '
 import json, sys
-path, token, email, url, expires = sys.argv[1:6]
+path = sys.argv[1]
+token, email, url, expires = sys.stdin.read().split("\0", 3)
 data = {"token": token, "email": email, "base_url": url}
 if expires:
     data["expires_at"] = expires
 with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
-PY
+' "$PEPONI_CREDENTIALS"
   chmod 600 "$PEPONI_CREDENTIALS"
 }
 
@@ -605,12 +607,77 @@ print(json.dumps({
 PY
 }
 
+# Finite HTTP limits. Without these, a hung host or huge body can stall the
+# CLI or fill the disk. 8 MiB is well above a personal task export.
+PEPONI_CURL_CONNECT_TIMEOUT=10
+PEPONI_CURL_MAX_TIME=60
+PEPONI_CURL_MAX_BYTES=8388608
+
+# Run curl with secrets in a mode-0600 temp config (never in argv).
+# Same-user processes can read /proc/<pid>/cmdline, so a bearer token or
+# login password passed as -H / --data would leak for the whole request.
+# stdout: "<http_code>\n<body>". Returns 1 on network/timeout/oversize.
+_curl_json() {
+  local method="$1" url="$2" token="${3:-}" data="${4:-}"
+  local tmp_dir cfg out code body curl_stat=0 size ok=0 escaped
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/peponi.XXXXXX")" || return 1
+  chmod 700 "$tmp_dir"
+  # Delete the config (token/password) even if curl is interrupted.
+  # shellcheck disable=SC2064
+  trap "rm -rf -- $(printf '%q' "$tmp_dir")" EXIT
+
+  cfg="$tmp_dir/config"
+  out="$tmp_dir/out"
+  umask 077
+  {
+    printf '%s\n' 'header = "Accept: application/json"'
+    printf '%s\n' 'header = "Content-Type: application/json"'
+    if [[ -n "$token" ]]; then
+      escaped="$token"
+      escaped="${escaped//\\/\\\\}"
+      escaped="${escaped//\"/\\\"}"
+      printf 'header = "Authorization: Bearer %s"\n' "$escaped"
+    fi
+    if [[ -n "$data" ]]; then
+      printf '%s' "$data" >"$tmp_dir/data"
+      chmod 600 "$tmp_dir/data"
+      printf 'data-binary = "@%s"\n' "$tmp_dir/data"
+    fi
+  } >"$cfg"
+  chmod 600 "$cfg"
+
+  code="$(
+    ulimit -f $((PEPONI_CURL_MAX_BYTES / 512 + 1)) 2>/dev/null || true
+    curl -sS -X "$method" \
+      --connect-timeout "$PEPONI_CURL_CONNECT_TIMEOUT" \
+      --max-time "$PEPONI_CURL_MAX_TIME" \
+      --max-filesize "$PEPONI_CURL_MAX_BYTES" \
+      --config "$cfg" \
+      -o "$out" \
+      -w '%{http_code}' \
+      "$url"
+  )" || curl_stat=$?
+
+  if [[ "$curl_stat" -eq 0 && -f "$out" ]]; then
+    size="$(wc -c <"$out")"
+    size="${size//[[:space:]]/}"
+    if [[ "$size" -le "$PEPONI_CURL_MAX_BYTES" ]]; then
+      body="$(cat "$out")"
+      ok=1
+    fi
+  fi
+
+  rm -rf -- "$tmp_dir"
+  trap - EXIT
+  [[ "$ok" -eq 1 ]] || return 1
+  printf '%s\n%s' "$code" "$body"
+}
+
 api_curl() {
   local method="$1" path="$2"
   shift 2
   local url
   url="$(base_url)${path}"
-  local args=(-sS -X "$method" -H "Accept: application/json" -H "Content-Type: application/json")
   local use_auth=0
   local data=""
   while [[ $# -gt 0 ]]; do
@@ -620,21 +687,13 @@ api_curl() {
       *) shift ;;
     esac
   done
+  local token=""
   if [[ "$use_auth" -eq 1 ]]; then
-    args+=(-H "Authorization: Bearer $(read_token)")
+    token="$(read_token)"
   fi
-  if [[ -n "$data" ]]; then
-    args+=(--data "$data")
-  fi
-  local tmp code body
-  tmp="$(mktemp)"
-  code="$(curl "${args[@]}" -o "$tmp" -w '%{http_code}' "$url")" || {
-    rm -f "$tmp"
-    die "network error talking to $url"
-  }
-  body="$(cat "$tmp")"
-  rm -f "$tmp"
-  printf '%s\n%s' "$code" "$body"
+  local resp
+  resp="$(_curl_json "$method" "$url" "$token" "$data")" || die "network error talking to $url"
+  printf '%s\n%s' "${resp%%$'\n'*}" "${resp#*$'\n'}"
 }
 
 print_or_json() {
@@ -734,7 +793,9 @@ cmd_auth_login() {
   fi
 
   local payload
-  payload="$(python3 -c 'import json,sys; print(json.dumps({"email":sys.argv[1],"password":sys.argv[2]}))' "$email" "$password")"
+  # Password on stdin (not python argv) — same /proc cmdline leak as curl.
+  payload="$(printf '%s\0%s' "$email" "$password" | python3 -c 'import json,sys; email, password = sys.stdin.read().split("\0", 1); print(json.dumps({"email": email, "password": password}))')"
+  password=""
 
   local resp code body err_code
   resp="$(api_curl POST /api/v1/auth/login --data "$payload")"
@@ -824,20 +885,21 @@ cmd_pull_snapshot() {
   need_cmd curl
   need_cmd python3
   [[ -f "$PEPONI_CREDENTIALS" ]] || return 1
-  local url tmp code
+  local token url resp code body tmp
+  token="$(python3 -c 'import json,sys
+try:
+    print(json.load(open(sys.argv[1])).get("token") or "")
+except Exception:
+    print("")
+' "$PEPONI_CREDENTIALS")" || return 1
+  [[ -n "$token" ]] || return 1
   url="$(base_url)/api/v1/export"
+  resp="$(_curl_json GET "$url" "$token")" || return 1
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  [[ "$code" == "200" ]] || return 1
   tmp="$(mktemp)"
-  code="$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -H "Accept: application/json" \
-    -H "Authorization: Bearer $(read_token)" \
-    "$url")" || {
-    rm -f "$tmp"
-    return 1
-  }
-  if [[ "$code" != "200" ]]; then
-    rm -f "$tmp"
-    return 1
-  fi
+  printf '%s' "$body" >"$tmp"
   if store_op import "$tmp" >/dev/null; then
     rm -f "$tmp"
     return 0
