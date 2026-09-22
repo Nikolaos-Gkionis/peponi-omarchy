@@ -35,9 +35,13 @@ say "==> Copied $PROJECT → $PLUGIN_DST"
 
 omarchy plugin validate "$PLUGIN_DST" || fail "installed copy failed validation"
 
-BIN_DST="${XDG_BIN_HOME:-$HOME/.local/bin}/peponi"
-mkdir -p "$(dirname "$BIN_DST")"
-install -m 755 "$PROJECT/bin/peponi" "$BIN_DST"
+# shellcheck source=lib-cli.sh
+source "$PROJECT/scripts/lib-cli.sh"
+BIN_DST="$(peponi_cli_dest)"
+# Do not overwrite a different program that already uses this generic name.
+if ! peponi_install_cli "$PROJECT/bin/peponi"; then
+  fail "${PEPONI_CLI_ERROR:-could not install CLI}"
+fi
 say "==> CLI → $BIN_DST"
 
 if command -v omarchy-shell >/dev/null 2>&1; then

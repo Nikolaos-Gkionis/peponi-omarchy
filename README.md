@@ -68,6 +68,10 @@ export PEPONI_BASE_URL=http://127.0.0.1:3000
 PEPONI_SETUP_MODE=cloud ./scripts/setup.sh
 ```
 
+Passwords and API tokens are sent only over HTTPS. HTTP is accepted only for a loopback host (`localhost`, `127.0.0.0/8`, or `::1`), for example Rails on this machine. `http://` to any other host is refused.
+
+Setup and install copy the CLI to `~/.local/bin/peponi` only when that path is missing or already this plugin's file. They will not overwrite a different program using the same name. Uninstall deletes that file only when its bytes are still the ones this plugin installed.
+
 ## Requirements
 
 - Omarchy Linux (Quickshell + `omarchy` CLI)
@@ -148,6 +152,7 @@ qml/                   # Overlay, Service, BarWidget, …
 bin/peponi             # CLI (local store or any instance)
 scripts/install.sh     # Dev copy install
 scripts/setup.sh       # CLI + local-or-sign-in (+ optional binds)
+scripts/lib-cli.sh     # Install/remove ~/.local/bin/peponi only if we own it
 scripts/install-binding.sh
 scripts/uninstall.sh
 docs/

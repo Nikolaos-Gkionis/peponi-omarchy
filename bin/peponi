@@ -14,6 +14,8 @@
 # Mode + instance:    ~/.config/peponi/config.json
 # Local tasks:        ~/.local/share/peponi/store.json
 # Override API host with PEPONI_BASE_URL or: peponi auth login --url URL
+# Passwords and tokens are sent only over HTTPS, except to a parsed loopback
+# host (localhost, 127.0.0.0/8, or ::1).
 
 set -euo pipefail
 
@@ -72,21 +74,87 @@ base_url() {
   echo "$DEFAULT_BASE_URL"
 }
 
+# Why this exists: a password or API token sent to http://some-public-host
+# can be read by anyone on that network. HTTPS encrypts it. HTTP is allowed
+# only for a loopback host, and only after the host is parsed — a name that
+# merely starts with "127.0.0.1" or "localhost" is not loopback.
+credential_url_error() {
+  printf 'refusing to send credentials to %s — HTTPS is required except for loopback (localhost, 127.0.0.0/8, ::1)' "$1"
+}
+
+# Print a canonical URL, or exit 1 when credentials must not be sent there.
+# The caller gives curl this canonical form, never the raw user string, so a
+# tricky spelling cannot make curl connect somewhere else.
+canonical_credential_url() {
+  python3 -c '
+import ipaddress, sys
+from urllib.parse import urlsplit
+
+raw = sys.argv[1]
+if not raw or any(c.isspace() or ord(c) < 32 for c in raw):
+    sys.exit(1)
+# "@" is userinfo (user:pass@host). "\" is a slash in some URL parsers.
+# Either one can make two parsers disagree about the host.
+if "@" in raw or "\\" in raw:
+    sys.exit(1)
+try:
+    parts = urlsplit(raw)
+    port = parts.port
+except ValueError:
+    sys.exit(1)
+scheme = parts.scheme.lower()
+if scheme not in ("http", "https"):
+    sys.exit(1)
+if parts.username is not None or parts.password is not None:
+    sys.exit(1)
+if parts.query or parts.fragment:
+    sys.exit(1)
+host = parts.hostname
+if not host or host.endswith(".") or "%" in host or "/" in host:
+    sys.exit(1)
+
+loopback = False
+if host == "localhost":
+    loopback = True
+else:
+    try:
+        loopback = bool(ipaddress.ip_address(host).is_loopback)
+    except ValueError:
+        loopback = False
+if scheme == "http" and not loopback:
+    sys.exit(1)
+
+shown = f"[{host}]" if ":" in host else host
+netloc = shown if port is None else f"{shown}:{port}"
+path = parts.path or ""
+if path == "/":
+    path = ""
+if path and not path.startswith("/"):
+    sys.exit(1)
+if path.startswith("//") or "/../" in path or path.endswith("/..") or path == "/..":
+    sys.exit(1)
+print(f"{scheme}://{netloc}{path}")
+' "$1"
+}
+
 # Turn "peponi.home" or "localhost:3000" into a usable API origin.
+# Returns 1 when the result would send credentials in cleartext off-machine.
 normalize_instance_url() {
   local u="${1:-}"
   u="${u#"${u%%[![:space:]]*}"}"
   u="${u%"${u##*[![:space:]]}"}"
   u="${u%/}"
   [[ -n "$u" ]] || return 1
-  if [[ ! "$u" =~ ^https?:// ]]; then
-    if [[ "$u" =~ ^localhost($|:) || "$u" =~ ^127\.0\.0\.1($|:) || "$u" =~ ^\[::1\]($|:) ]]; then
-      u="http://$u"
+  local lower="${u,,}"
+  if [[ ! "$lower" =~ ^https?:// ]]; then
+    # No scheme typed. Use HTTP only when the host is already loopback.
+    if canonical_credential_url "http://${u}" >/dev/null; then
+      u="http://${u}"
     else
-      u="https://$u"
+      u="https://${u}"
     fi
   fi
-  printf '%s\n' "${u%/}"
+  canonical_credential_url "$u"
 }
 
 save_host() {
@@ -616,9 +684,17 @@ PEPONI_CURL_MAX_BYTES=8388608
 # Run curl with secrets in a mode-0600 temp config (never in argv).
 # Same-user processes can read /proc/<pid>/cmdline, so a bearer token or
 # login password passed as -H / --data would leak for the whole request.
-# stdout: "<http_code>\n<body>". Returns 1 on network/timeout/oversize.
+# stdout: "<http_code>\n<body>".
+# Returns 1 on network/timeout/oversize, 2 when the URL must not carry credentials.
 _curl_json() {
   local method="$1" url="$2" token="${3:-}" data="${4:-}"
+  local raw_url="$url"
+  # Login sends the password in the body. Later calls send the bearer token.
+  # Both are credentials. Reject cleartext before curl runs.
+  if [[ -n "$token" || -n "$data" ]]; then
+    # 2 means "do not send", not a network failure. api_curl prints the reason.
+    url="$(canonical_credential_url "$raw_url")" || return 2
+  fi
   local tmp_dir cfg out code body curl_stat=0 size ok=0 escaped
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/peponi.XXXXXX")" || return 1
   chmod 700 "$tmp_dir"
@@ -691,8 +767,12 @@ api_curl() {
   if [[ "$use_auth" -eq 1 ]]; then
     token="$(read_token)"
   fi
-  local resp
-  resp="$(_curl_json "$method" "$url" "$token" "$data")" || die "network error talking to $url"
+  local resp status=0
+  resp="$(_curl_json "$method" "$url" "$token" "$data")" || status=$?
+  if [[ "$status" -eq 2 ]]; then
+    die "$(credential_url_error "$url")"
+  fi
+  [[ "$status" -eq 0 ]] || die "network error talking to $url"
   printf '%s\n%s' "${resp%%$'\n'*}" "${resp#*$'\n'}"
 }
 
@@ -751,22 +831,22 @@ cmd_auth_login() {
   local url="" default_url
 
   if [[ -n "${url_flag}" ]]; then
-    url="$(normalize_instance_url "$url_flag")" || die "invalid --url"
+    url="$(normalize_instance_url "$url_flag")" || die "$(credential_url_error "$url_flag")"
   elif [[ -n "${PEPONI_BASE_URL:-}" ]]; then
-    url="$(normalize_instance_url "$PEPONI_BASE_URL")" || die "invalid PEPONI_BASE_URL"
+    url="$(normalize_instance_url "$PEPONI_BASE_URL")" || die "$(credential_url_error "$PEPONI_BASE_URL")"
   else
     default_url="$(read_host)"
     [[ -n "$default_url" ]] || default_url="$DEFAULT_BASE_URL"
     if [[ "$json_mode" -eq 1 ]]; then
-      url="$(normalize_instance_url "$default_url")"
+      url="$(normalize_instance_url "$default_url")" || die "$(credential_url_error "$default_url")"
     else
       printf 'Instance URL [%s]: ' "$default_url" >&2
       local typed=""
       IFS= read -r typed || true
       if [[ -n "${typed:-}" ]]; then
-        url="$(normalize_instance_url "$typed")" || die "invalid instance URL"
+        url="$(normalize_instance_url "$typed")" || die "$(credential_url_error "$typed")"
       else
-        url="$(normalize_instance_url "$default_url")"
+        url="$(normalize_instance_url "$default_url")" || die "$(credential_url_error "$default_url")"
       fi
     fi
   fi
@@ -864,7 +944,7 @@ cmd_auth_host() {
   local raw="${1:-}"
   if [[ -n "$raw" ]]; then
     local url
-    url="$(normalize_instance_url "$raw")" || die "invalid instance URL"
+    url="$(normalize_instance_url "$raw")" || die "$(credential_url_error "$raw")"
     save_host "$url"
   fi
   local url
@@ -894,6 +974,9 @@ except Exception:
 ' "$PEPONI_CREDENTIALS")" || return 1
   [[ -n "$token" ]] || return 1
   url="$(base_url)/api/v1/export"
+  # Check in this process, not inside the command substitution below.
+  # die() there would only leave the subshell, and pull would hide the reason.
+  canonical_credential_url "$url" >/dev/null || die "$(credential_url_error "$url")"
   resp="$(_curl_json GET "$url" "$token")" || return 1
   code="${resp%%$'\n'*}"
   body="${resp#*$'\n'}"
@@ -931,8 +1014,17 @@ cmd_auth_logout() {
 
   if [[ -f "$PEPONI_CREDENTIALS" ]]; then
     need_cmd curl
-    local resp
-    resp="$(api_curl DELETE /api/v1/auth/logout --auth || true)"
+    local resp origin
+    origin="$(base_url)"
+    # Still delete the saved token on this machine when the instance URL is
+    # not safe to contact. Skipping the request must not keep the password
+    # or token on disk.
+    if canonical_credential_url "$origin" >/dev/null; then
+      resp="$(api_curl DELETE /api/v1/auth/logout --auth || true)" || true
+    else
+      printf 'peponi: %s\n' "$(credential_url_error "$origin")" >&2
+      printf 'peponi: removed the saved login locally without contacting that host\n' >&2
+    fi
     clear_credentials
     if [[ "$json_mode" -eq 1 ]]; then
       printf '{"ok":true,"revoked":true,"local_turned_off":%s}\n' \

@@ -36,6 +36,8 @@ export PEPONI_BASE_URL=http://127.0.0.1:3000
 PEPONI_SETUP_MODE=cloud ./scripts/setup.sh
 ```
 
+Sign-in sends your password only over HTTPS. HTTP is allowed only for loopback (`localhost`, `127.0.0.0/8`, or `::1`). Setup will not replace a different program already installed at `~/.local/bin/peponi`.
+
 ## 2. Open the overlay
 
 - Click the **P** icon on the Omarchy bar, or
@@ -131,6 +133,8 @@ Switch later with `peponi auth local` or `peponi auth login --url …`. Sign-in 
 # or
 omarchy plugin remove peponi.one-day --yes
 ```
+
+Uninstall removes `~/.local/bin/peponi` only when that file is still the CLI this plugin installed. A different program at that path is left in place.
 
 After plugin code changes (`keepLoaded: true`), run `omarchy restart shell`.
 

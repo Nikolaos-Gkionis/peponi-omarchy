@@ -108,7 +108,30 @@ Checklist:
 
 Cloud writes need the Rails add/remove routes **deployed** (`kamal deploy` in todo_app). Local mode is plugin-only.
 
-## 5. Handoff
+## 5. Credential transport and CLI path
+
+HTTPS is required for any host that is not loopback. These must fail before `curl` runs (a fake `curl` earlier on `PATH` must not be executed):
+
+```bash
+export PEPONI_CONFIG_DIR="$(mktemp -d)"
+export PEPONI_DATA_DIR="$(mktemp -d)"
+PEPONI_EMAIL=a PEPONI_PASSWORD=b ./bin/peponi auth login --url http://evil.example
+PEPONI_EMAIL=a PEPONI_PASSWORD=b ./bin/peponi auth login --url http://127.0.0.1.evil.example
+./bin/peponi auth host http://2130706433
+```
+
+These must be accepted as instance URLs (no network call until login):
+
+```bash
+./bin/peponi auth host http://127.0.0.1:3000
+./bin/peponi auth host http://localhost:3000
+./bin/peponi auth host 'http://[::1]:3000'
+./bin/peponi auth host https://peponi.to
+```
+
+CLI path: copy a different executable to `~/.local/bin/peponi`, run `./scripts/setup.sh`, and confirm it refuses and leaves that file unchanged. Then uninstall must also leave it in place.
+
+## 6. Handoff
 
 - No commit/new-repo from the agent — create the standalone repo yourself (see README).
 - Keep Rails `/api/v1` in todo_app (any instance); keep `peponi-omarchy/` as the helper package.

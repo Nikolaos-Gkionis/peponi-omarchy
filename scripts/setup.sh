@@ -6,7 +6,9 @@ set -euo pipefail
 
 PROJECT="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")/.." && pwd)"
 PLUGIN_ID="peponi.one-day"
-BIN_DST="${XDG_BIN_HOME:-$HOME/.local/bin}/peponi"
+# shellcheck source=lib-cli.sh
+source "$PROJECT/scripts/lib-cli.sh"
+BIN_DST="$(peponi_cli_dest)"
 DEFAULT_URL="https://peponi.to"
 
 say() { printf '%s\n' "$*"; }
@@ -14,8 +16,10 @@ fail() { printf 'setup.sh: %s\n' "$*" >&2; exit 1; }
 
 [[ -x "$PROJECT/bin/peponi" ]] || fail "missing $PROJECT/bin/peponi"
 
-mkdir -p "$(dirname "$BIN_DST")"
-install -m 755 "$PROJECT/bin/peponi" "$BIN_DST"
+# Do not overwrite a different program that already uses this generic name.
+if ! peponi_install_cli "$PROJECT/bin/peponi"; then
+  fail "${PEPONI_CLI_ERROR:-could not install CLI}"
+fi
 say "==> CLI → $BIN_DST"
 
 # Prefer PATH for later shells
