@@ -40,6 +40,7 @@ Item {
 
   signal requestFocus()
   signal moveRequested(var taskId, int delta)
+  signal removeRequested(var taskId)
 
   function resetCursor() {
     selectedIndex = 0
@@ -147,7 +148,7 @@ Item {
 
         Text {
           anchors.verticalCenter: parent.verticalCenter
-          text: "n add · a today · j/k · K/J move · y/esc close"
+          text: "n add · a today · × delete · j/k · y/esc close"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
@@ -214,8 +215,10 @@ Item {
                 onClicked: root.selectIndex(index)
               }
 
+              // z above the row's click catcher so × / ↑ / ↓ receive the click.
               Row {
                 id: itemRow
+                z: 3
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
@@ -232,7 +235,7 @@ Item {
                 }
 
                 Column {
-                  width: parent.width - Style.space(72)
+                  width: parent.width - Style.space(108)
                   spacing: Style.space(2)
 
                   Text {
@@ -297,6 +300,25 @@ Item {
                       onClicked: {
                         root.selectIndex(index)
                         root.moveRequested(row.id, 1)
+                      }
+                    }
+                  }
+
+                  // Same as the Delete key. Removes this inbox row.
+                  Text {
+                    text: "×"
+                    color: root.accent
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+
+                    MouseArea {
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(6)
+                      cursorShape: Qt.PointingHandCursor
+                      onClicked: {
+                        root.selectIndex(index)
+                        root.removeRequested(row.id)
                       }
                     }
                   }

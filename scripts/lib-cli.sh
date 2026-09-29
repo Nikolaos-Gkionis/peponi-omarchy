@@ -74,19 +74,119 @@ PY
 peponi_cli_write_stamp() {
   local dest="$1" digest="$2"
   umask 077
+  # A planted symlink at the stamp path must not be opened and truncated.
+  # Write a new private file in the same directory, then rename it into place.
+  # rename replaces a symlink; it does not follow it.
   python3 - "$(peponi_cli_stamp)" "$dest" "$digest" "$PEPONI_CLI_PLUGIN_ID" <<'PY'
-import json, os, sys
+import json, os, secrets, stat, sys
+
 path, dest, digest, plugin_id = sys.argv[1:5]
-os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-with os.fdopen(fd, "w") as handle:
-    json.dump(
-        {"plugin": plugin_id, "path": dest, "sha256": digest},
-        handle,
-        indent=2,
-    )
-    handle.write("\n")
-os.chmod(path, 0o600)
+parent = os.path.dirname(path)
+
+def fail(message):
+    print("peponi: " + message, file=sys.stderr)
+    sys.exit(1)
+
+def real_dir(directory):
+    info = os.lstat(directory)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("refusing to write the install stamp through " + directory)
+
+if os.path.lexists(parent):
+    real_dir(parent)
+else:
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    real_dir(parent)
+
+tmp = os.path.join(parent, ".cli-install." + secrets.token_hex(8))
+flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+fd = os.open(tmp, flags, 0o600)
+try:
+    with os.fdopen(fd, "w") as handle:
+        json.dump(
+            {"plugin": plugin_id, "path": dest, "sha256": digest},
+            handle,
+            indent=2,
+        )
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PY
+}
+
+# Where this plugin is copied for a local install.
+peponi_plugin_dst() {
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/${PEPONI_CLI_PLUGIN_ID}"
+}
+
+# Print missing, ours, or foreign.
+# "ours" means a real directory whose manifest.json is a regular file
+# (not a symlink) and says this plugin's id. Anything else is foreign,
+# including a symlink, a file, or another plugin's folder.
+peponi_plugin_state() {
+  python3 - "$1" "$PEPONI_CLI_PLUGIN_ID" <<'PY'
+import json, os, stat, sys
+
+path, plugin_id = sys.argv[1], sys.argv[2]
+if not os.path.lexists(path):
+    print("missing")
+    raise SystemExit(0)
+info = os.lstat(path)
+if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+    print("foreign")
+    raise SystemExit(0)
+manifest = os.path.join(path, "manifest.json")
+if not os.path.lexists(manifest):
+    print("foreign")
+    raise SystemExit(0)
+minfo = os.lstat(manifest)
+if stat.S_ISLNK(minfo.st_mode) or not stat.S_ISREG(minfo.st_mode):
+    print("foreign")
+    raise SystemExit(0)
+try:
+    fd = os.open(manifest, os.O_RDONLY | os.O_NOFOLLOW)
+except OSError:
+    print("foreign")
+    raise SystemExit(0)
+with os.fdopen(fd, "r") as handle:
+    try:
+        data = json.load(handle)
+    except Exception:
+        print("foreign")
+        raise SystemExit(0)
+print("ours" if data.get("id") == plugin_id else "foreign")
+PY
+}
+
+# Delete a real file or directory without following symlinks.
+# A symlink is unlinked itself. It is never treated as the thing it points at.
+peponi_remove_tree() {
+  python3 - "$1" <<'PY'
+import os, stat, sys
+
+def remove(path, top):
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode):
+        if top:
+            print("peponi: refusing to remove symlink " + path, file=sys.stderr)
+            sys.exit(1)
+        os.unlink(path)
+        return
+    if stat.S_ISDIR(info.st_mode):
+        for name in os.listdir(path):
+            remove(os.path.join(path, name), False)
+        os.rmdir(path)
+        return
+    os.unlink(path)
+
+remove(sys.argv[1], True)
 PY
 }
 

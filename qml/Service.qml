@@ -30,6 +30,9 @@ Item {
   property bool mutating: false
   property bool pendingNotYetAdd: false
   property bool pendingNotYetToday: false
+  // A Not Yet fetch was already running when another was requested.
+  // Skip the older reply and run the new one when the process exits.
+  property bool notYetAgain: false
 
   property date selectedDate: Model.startOfToday()
   property var dayTasks: []
@@ -98,7 +101,12 @@ Item {
       notYetItems = Model.notYetItems()
       return
     }
+    if (loadingNotYet) {
+      notYetAgain = true
+      return
+    }
     loadingNotYet = true
+    notYetAgain = false
     startPeponi(notYetProcess, ["not-yet", "--json"])
   }
 
@@ -200,29 +208,32 @@ Item {
     setRollOver(!rollOver)
   }
 
+  // Drop one id from the day list and the Not Yet drawer right away.
+  function forgetTaskId(id) {
+    var want = String(id)
+    var kept = []
+    for (var i = 0; i < dayTasks.length; i++) {
+      if (String(dayTasks[i].id) !== want) kept.push(dayTasks[i])
+    }
+    dayTasks = kept
+    openTaskCount = Model.openCount(dayTasks)
+    var keptNy = []
+    for (var j = 0; j < notYetItems.length; j++) {
+      if (String(notYetItems[j].id) !== want) keptNy.push(notYetItems[j])
+    }
+    notYetItems = keptNy
+  }
+
   // Delete by API id (from the day JSON). Demo ids are local-only strings.
   function removeTask(id) {
     if (id === undefined || id === null || String(id) === "") return
-    if (demoMode) {
-      var kept = []
-      for (var i = 0; i < dayTasks.length; i++) {
-        if (String(dayTasks[i].id) !== String(id)) kept.push(dayTasks[i])
-      }
-      dayTasks = kept
-      openTaskCount = Model.openCount(dayTasks)
-      var keptNy = []
-      for (var j = 0; j < notYetItems.length; j++) {
-        if (String(notYetItems[j].id) !== String(id)) keptNy.push(notYetItems[j])
-      }
-      notYetItems = keptNy
-      lastError = ""
-      return
-    }
+    forgetTaskId(id)
+    lastError = ""
+    if (demoMode) return
     if (!authenticated) return
     mutating = true
     pendingNotYetAdd = false
     pendingNotYetToday = false
-    lastError = ""
     startPeponi(mutateProcess, ["rm", String(id), "--json"])
   }
 
@@ -236,10 +247,10 @@ Item {
       var detail = String(stderrText || stdoutText || "").trim().split("\n")[0]
       lastError = detail !== "" ? detail : "Could not save task"
       statusMessage = lastError
-      if (wasToday) {
-        loadDay(selectedDate)
-        loadNotYet()
-      }
+      // The row was hidden already. Load again so a failed delete or move
+      // puts it back.
+      loadDay(selectedDate)
+      loadNotYet()
       return
     }
     lastError = ""
@@ -435,9 +446,16 @@ Item {
       if (data.title) notYetTitle = data.title
     } catch (e) {}
     var parsed = Model.notYetFromJson(stdoutText)
-    // An empty parse after a successful fetch can wipe a just-added row.
-    if (parsed.length > 0)
-      notYetItems = parsed
+    // A task that was just typed still has a temporary id. Keep it if this
+    // reply was already in flight and does not know about it yet.
+    if (pendingNotYetAdd) {
+      for (var i = 0; i < notYetItems.length; i++) {
+        if (String(notYetItems[i].id).indexOf("pending-") === 0)
+          parsed.push(notYetItems[i])
+      }
+    }
+    // An empty list is real: the last Not Yet task was deleted or moved.
+    notYetItems = parsed
   }
 
   Component.onCompleted: reloadAll()
@@ -484,6 +502,11 @@ Item {
       waitForEnd: true
     }
     onExited: function(exitCode) {
+      if (root.notYetAgain) {
+        root.notYetAgain = false
+        root.startPeponi(notYetProcess, ["not-yet", "--json"])
+        return
+      }
       root.applyNotYet(notYetStdout.text, exitCode)
     }
   }

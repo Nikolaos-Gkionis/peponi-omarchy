@@ -939,6 +939,10 @@ Item {
             if (keyCatcher) keyCatcher.forceActiveFocus()
           }
           onMoveRequested: root.moveTaskById(taskId, delta)
+          onRemoveRequested: {
+            if (root.service && typeof root.service.removeTask === "function")
+              root.service.removeTask(taskId)
+          }
         }
 
         // Lightweight shortcuts help overlay inside the card.
@@ -981,7 +985,7 @@ Item {
               Text {
                 width: parent.width
                 text: root.drawerOpen
-                      ? "n       add a Not Yet task\na       move highlighted task to today\nj / k   move in Not Yet (or ↑ / ↓)\nK / J   move highlighted task up / down\nDelete  remove highlighted Not Yet task\ny / Esc close the drawer\n?       this help"
+                      ? "n       add a Not Yet task\na       move highlighted task to today (it leaves Not Yet)\nj / k   move in Not Yet (or ↑ / ↓)\nK / J   move highlighted task up / down\n× / Delete  remove highlighted Not Yet task\ny / Esc close the drawer\n?       this help"
                       : ((!root.signedIn && !root.demoMode)
                         ? "← / →   previous / next day\nl       use locally on this machine\na       sign in to an instance\ny       toggle Not Yet drawer\nt       jump to today\nj / k   move in list\nEsc     close drawer, then overlay\n?       this help"
                         : "h / l   previous / next day (also ← / →)\nj / k   move in list (also ↑ / ↓)\nSpace   tick / untick highlighted task\nK / J   move highlighted task up / down\nn       add a task on this day\nr       roll unfinished tasks to today\nDelete  remove highlighted task\ny       toggle Not Yet drawer\nt       jump to today\nEsc     close drawer, then overlay\n?       this help")

@@ -120,7 +120,7 @@ Mouse: click the checkbox to tick, `↑`/`↓` on a row to reorder, or the roll-
 | `↑` / `↓` or `j` / `k` | Highlight a task in the drawer |
 | `K` / `J` | Move the highlighted Not Yet task up / down |
 | `a` | Move the **highlighted** Not Yet task onto **today** |
-| `Delete` | Remove the highlighted Not Yet task |
+| `Delete` or `×` | Remove the highlighted Not Yet task |
 | `Esc` | Close the drawer (then the overlay) |
 
 While the drawer is open, those keys apply to Not Yet, not the day. `a` means “sign in” only when you are **not set up yet** and the drawer is **closed**.

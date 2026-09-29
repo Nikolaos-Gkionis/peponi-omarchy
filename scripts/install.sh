@@ -17,16 +17,35 @@ command -v rsync >/dev/null 2>&1 || fail "rsync is required"
 
 omarchy plugin validate "$PROJECT" || fail "manifest validation failed"
 
+# shellcheck source=lib-cli.sh
+source "$PROJECT/scripts/lib-cli.sh"
+
 mkdir -p "$(dirname "$PLUGIN_DST")"
 
-# Omarchy rejects a plugin folder that is itself a symlink — use a real copy.
-if [[ -e "$PLUGIN_DST" && -d "$PLUGIN_DST/.git" && ! -L "$PLUGIN_DST" ]]; then
-  fail "$PLUGIN_DST is a git checkout from 'omarchy plugin add'; remove it first:
+# Do not delete a folder we do not own. A symlink, a file, or another
+# plugin's directory at this path is left untouched.
+plugin_state="$(peponi_plugin_state "$PLUGIN_DST")" || fail "could not check $PLUGIN_DST"
+case "$plugin_state" in
+  missing)
+    mkdir -p "$PLUGIN_DST"
+    ;;
+  ours)
+    # omarchy plugin add keeps a git checkout here. Replacing it would
+    # throw away that clone. Ask the user to remove it the Omarchy way.
+    if [[ -d "$PLUGIN_DST/.git" && ! -L "$PLUGIN_DST/.git" ]]; then
+      fail "$PLUGIN_DST is a git checkout from 'omarchy plugin add'; remove it first:
   omarchy plugin remove $PLUGIN_ID --yes"
+    fi
+    ;;
+  *)
+    fail "refusing to replace $PLUGIN_DST — it is not a $PLUGIN_ID install"
+    ;;
+esac
+
+if [[ -L "$PLUGIN_DST" || ! -d "$PLUGIN_DST" ]]; then
+  fail "refusing to install through $PLUGIN_DST"
 fi
 
-rm -rf "$PLUGIN_DST"
-mkdir -p "$PLUGIN_DST"
 rsync -a --delete \
   --exclude '.git' \
   --exclude '.gitignore' \
@@ -35,8 +54,6 @@ say "==> Copied $PROJECT → $PLUGIN_DST"
 
 omarchy plugin validate "$PLUGIN_DST" || fail "installed copy failed validation"
 
-# shellcheck source=lib-cli.sh
-source "$PROJECT/scripts/lib-cli.sh"
 BIN_DST="$(peponi_cli_dest)"
 # Do not overwrite a different program that already uses this generic name.
 if ! peponi_install_cli "$PROJECT/bin/peponi"; then

@@ -101,8 +101,8 @@ Checklist:
 - [ ] `←` / `→` change day and reload
 - [ ] `y` opens Not Yet drawer
 - [ ] With the drawer open, `n` adds a Not Yet task that stays after a shell restart
-- [ ] `↑` / `↓` then `a` moves that task onto today (it leaves Not Yet)
-- [ ] `↑` / `↓` then `Delete` removes a Not Yet task
+- [ ] `↑` / `↓` then `a` moves that task onto today and it stays out of Not Yet, including when it was the last inbox row
+- [ ] `↑` / `↓` then `Delete`, or click `×` on the row, removes a Not Yet task and it stays gone
 - [ ] Bar `P` toggle works from chosen section (left/center/right)
 - [ ] Optional `SUPER+ALT+O` toggles overlay
 
@@ -130,6 +130,8 @@ These must be accepted as instance URLs (no network call until login):
 ```
 
 CLI path: copy a different executable to `~/.local/bin/peponi`, run `./scripts/setup.sh`, and confirm it refuses and leaves that file unchanged. Then uninstall must also leave it in place.
+
+Plugin path: a symlink or an unrelated directory at `~/.config/omarchy/plugins/peponi.one-day` must be left in place by `./scripts/install.sh` and `./scripts/uninstall.sh`. A symlink at `~/.config/peponi/cli-install.json` must not be followed; the other file stays unchanged and the path becomes a regular stamp file.
 
 A fake `python3` or `curl` earlier on `PATH`, and a `PYTHONSTARTUP` file, must not change the result. `http://evil.example` is still refused, and the fake programs are not executed. A parent-supplied `PEPONI_CURL` (same for `PEPONI_MKTEMP`, `PEPONI_CAT`, `PEPONI_RM`, `PEPONI_WC`, and `PEPONI_CHMOD`) must not run either. The overlay starts the CLI with `clearEnvironment` and `PATH=/usr/bin:/bin` only.
 

@@ -448,6 +448,13 @@ def load():
     return data
 
 
+def mark_not_yet_local(data):
+    # Once this machine has its own Not Yet list, an empty inbox must stay
+    # empty. Otherwise the next cloud read copies the website list back
+    # and a task you just moved to today reappears in the drawer.
+    data.setdefault("prefs", {})["not_yet_seeded"] = True
+
+
 def is_done(task):
     return bool(task.get("completed") or task.get("done"))
 
@@ -564,6 +571,7 @@ if op == "rm":
     if len(kept_ny) != len(data["not_yet"]):
         found = True
         data["not_yet"] = kept_ny
+        mark_not_yet_local(data)
     if not found:
         print(json.dumps({"ok": False, "error": "task not found"}))
         raise SystemExit(1)
@@ -578,6 +586,7 @@ if op == "add_not_yet":
     data["next_id"] = tid + 1
     row = task_row(tid, title, list_name="Inbox")
     data["not_yet"].append(row)
+    mark_not_yet_local(data)
     save(data)
     print(json.dumps({"ok": True, "task": row}))
     raise SystemExit(0)
@@ -597,6 +606,7 @@ if op == "to_day":
         print(json.dumps({"ok": False, "error": "task not found"}))
         raise SystemExit(1)
     data["not_yet"] = kept
+    mark_not_yet_local(data)
     data["days"].setdefault(date, []).append(found)
     data["days"][date] = sort_unfinished_first(data["days"][date])
     save(data)
@@ -671,11 +681,16 @@ if op == "not_yet":
     raise SystemExit(0)
 
 if op == "seed_not_yet":
-    # Copy website Not Yet into the local file once (empty inbox only).
+    # Copy website Not Yet into the local file once. After that, the local
+    # list wins even when it is empty, so delete / "move to today" stick.
     src = Path(args[0]) if args else None
     cloud = json.loads(src.read_text() if src and src.exists() else "{}")
     data = load()
-    if data["not_yet"]:
+    prefs = data.setdefault("prefs", {})
+    if data["not_yet"] or prefs.get("not_yet_seeded"):
+        if not prefs.get("not_yet_seeded"):
+            mark_not_yet_local(data)
+            save(data)
         print(json.dumps({
             "title": "Not Yet",
             "pages": [{"name": "Inbox", "todos": data["not_yet"]}],
@@ -694,6 +709,7 @@ if op == "seed_not_yet":
                 bool(t.get("completed") or t.get("done")),
                 list_name,
             ))
+    mark_not_yet_local(data)
     save(data)
     print(json.dumps({
         "title": cloud.get("title") or "Not Yet",
@@ -1425,7 +1441,7 @@ cmd_move() {
   [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number"
 
   ensure_store
-  local mode body=""
+  local mode body=""p v
   mode="$(effective_mode)"
 
   if [[ "$mode" == "cloud" ]]; then
@@ -1446,13 +1462,7 @@ tasks = data.get("tasks") or []
 delta = -1 if direction == "up" else 1
 
 def done(t):
-    return bool(t.get("completed") or t.get("done"))
-
-def same(t):
-    try:
-        return int(t.get("id")) == int(tid)
-    except (TypeError, ValueError):
-        return str(t.get("id")) == str(tid)
+    return bool(t.get("completed") or t.get("done"))     p                                                                          
 
 visual = [t for t in tasks if not done(t)] + [t for t in tasks if done(t)]
 idx = next((i for i, t in enumerate(visual) if same(t)), None)
