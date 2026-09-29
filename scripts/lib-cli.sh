@@ -126,10 +126,16 @@ peponi_plugin_dst() {
   printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/${PEPONI_CLI_PLUGIN_ID}"
 }
 
+# Record of the files this installer wrote. Kept outside the plugin folder
+# so a copied manifest inside that folder cannot pretend to be our record.
+peponi_plugin_stamp() {
+  printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/peponi/plugin-install.json"
+}
+
 # Print missing, ours, or foreign.
-# "ours" means a real directory whose manifest.json is a regular file
-# (not a symlink) and says this plugin's id. Anything else is foreign,
-# including a symlink, a file, or another plugin's folder.
+# "ours" here only means the folder looks like this plugin: a real directory
+# whose manifest.json is a regular file and says our id. That is not enough
+# to delete unrelated files. Deleting uses the install record as well.
 peponi_plugin_state() {
   python3 - "$1" "$PEPONI_CLI_PLUGIN_ID" <<'PY'
 import json, os, stat, sys
@@ -187,6 +193,222 @@ def remove(path, top):
     os.unlink(path)
 
 remove(sys.argv[1], True)
+PY
+}
+
+# upgrade SRC DST — copy our files, leave unknown files, drop only files we
+# recorded last time that this checkout no longer ships.
+# plan DST — print gone, skip, files, or whole.
+#   skip: do not call omarchy plugin remove
+#   files: delete only recorded files; unknown files stay
+#   whole: the folder contains nothing except files we recorded
+# remove-recorded DST — delete recorded files and leave everything else.
+peponi_plugin_tool() {
+  local cmd="$1"
+  shift
+  python3 - "$cmd" "$PEPONI_CLI_PLUGIN_ID" "$(peponi_plugin_stamp)" "$@" <<'PY'
+import json, os, secrets, stat, sys
+
+cmd, plugin_id, stamp_path = sys.argv[1:4]
+args = sys.argv[4:]
+src = ""
+dst = ""
+if cmd == "upgrade":
+    src, dst = args[0], args[1]
+elif cmd in ("plan", "remove-recorded"):
+    dst = args[0]
+
+def fail(message):
+    print("peponi: " + message, file=sys.stderr)
+    sys.exit(1)
+
+def read_manifest(directory):
+    # Same rule as peponi_plugin_state: never follow a symlink.
+    if not os.path.lexists(directory):
+        return None
+    info = os.lstat(directory)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return None
+    manifest = os.path.join(directory, "manifest.json")
+    if not os.path.lexists(manifest):
+        return None
+    minfo = os.lstat(manifest)
+    if stat.S_ISLNK(minfo.st_mode) or not stat.S_ISREG(minfo.st_mode):
+        return None
+    try:
+        fd = os.open(manifest, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "r") as handle:
+        try:
+            data = json.load(handle)
+        except Exception:
+            return None
+    if data.get("id") != plugin_id:
+        return None
+    return data
+
+def read_stamp():
+    if not os.path.lexists(stamp_path):
+        return None
+    info = os.lstat(stamp_path)
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return None
+    try:
+        fd = os.open(stamp_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "r") as handle:
+        try:
+            data = json.load(handle)
+        except Exception:
+            return None
+    if data.get("plugin") != plugin_id or data.get("path") != dst:
+        return None
+    files = data.get("files")
+    if not isinstance(files, list):
+        return None
+    return data
+
+def write_stamp(files):
+    parent = os.path.dirname(stamp_path)
+    if os.path.lexists(parent):
+        info = os.lstat(parent)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            fail("refusing to write the plugin record through " + parent)
+    else:
+        os.makedirs(parent, mode=0o700, exist_ok=True)
+    payload = {"plugin": plugin_id, "path": dst, "files": files}
+    tmp = os.path.join(parent, ".plugin-install." + secrets.token_hex(8))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, stamp_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+def source_files(root):
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        kept = []
+        for name in dirnames:
+            path = os.path.join(dirpath, name)
+            # Do not walk a symlinked directory or a nested git checkout.
+            if name == ".git" or os.path.islink(path):
+                continue
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            if name == ".gitignore":
+                continue
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            found.append(rel)
+    return sorted(found)
+
+def dest_files(root):
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        kept = []
+        for name in dirnames:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            if os.path.islink(path) or name == ".git":
+                found.append(rel)
+                continue
+            kept.append(name)
+        dirnames[:] = kept
+        for name in filenames:
+            path = os.path.join(dirpath, name)
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            found.append(rel)
+    return found
+
+def clear_stamp():
+    # Unlink the record itself. Do not follow it if it is a symlink.
+    if not os.path.lexists(stamp_path):
+        return
+    info = os.lstat(stamp_path)
+    if stat.S_ISLNK(info.st_mode) or stat.S_ISREG(info.st_mode):
+        os.unlink(stamp_path)
+
+def unlink_recorded(rel):
+    # Only the path we recorded. A symlink is removed as a symlink.
+    target = os.path.join(dst, rel)
+    if not os.path.lexists(target):
+        return False
+    info = os.lstat(target)
+    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+        return False
+    os.unlink(target)
+    return True
+
+def prune_empty_parents(removed):
+    parents = []
+    for rel in removed:
+        parent = os.path.dirname(rel)
+        while parent:
+            parents.append(parent)
+            parent = os.path.dirname(parent)
+    for rel in sorted(set(parents), key=lambda item: item.count("/"), reverse=True):
+        directory = os.path.join(dst, rel)
+        if os.path.islink(directory) or not os.path.isdir(directory):
+            continue
+        if not os.listdir(directory):
+            os.rmdir(directory)
+
+if cmd == "upgrade":
+    if read_manifest(dst) is None:
+        fail("refusing to update " + dst + " — it is not a " + plugin_id + " install")
+    shipped = source_files(src)
+    previous = read_stamp()
+    old = set(previous["files"]) if previous else set()
+    removed = []
+    for rel in sorted(old - set(shipped), key=lambda item: item.count("/"), reverse=True):
+        if unlink_recorded(rel):
+            removed.append(rel)
+    prune_empty_parents(removed)
+    write_stamp(shipped)
+    raise SystemExit(0)
+
+if cmd == "plan":
+    if not os.path.lexists(dst):
+        print("gone")
+        raise SystemExit(0)
+    if read_manifest(dst) is None or read_stamp() is None:
+        print("skip")
+        raise SystemExit(0)
+    recorded = set(read_stamp()["files"])
+    extras = [rel for rel in dest_files(dst) if rel not in recorded]
+    print("files" if extras else "whole")
+    raise SystemExit(0)
+
+if cmd == "remove-recorded":
+    previous = read_stamp()
+    if read_manifest(dst) is None or previous is None:
+        fail("refusing to remove files from " + dst)
+    removed = []
+    for rel in previous["files"]:
+        if unlink_recorded(rel):
+            removed.append(rel)
+    prune_empty_parents(removed)
+    clear_stamp()
+    raise SystemExit(0)
+
+if cmd == "clear-stamp":
+    clear_stamp()
+    raise SystemExit(0)
+
+fail("unknown plugin tool: " + cmd)
 PY
 }
 

@@ -13,22 +13,31 @@ DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/peponi"
 
 echo "==> Peponi Omarchy helper uninstall"
 
-if command -v omarchy >/dev/null 2>&1; then
-  omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
-  omarchy plugin remove "$PLUGIN_ID" --yes 2>/dev/null || true
-fi
-
-# Only remove a directory we can prove is this plugin. A symlink or an
-# unrelated folder stays, even when "omarchy plugin remove" failed.
-plugin_state="$(peponi_plugin_state "$PLUGIN_DST")" || plugin_state="foreign"
-case "$plugin_state" in
-  ours)
-    peponi_remove_tree "$PLUGIN_DST"
+# Decide before disable/remove. "omarchy plugin remove" moves whatever
+# folder is named peponi.one-day, even when that folder is not ours.
+plugin_plan="$(peponi_plugin_tool plan "$PLUGIN_DST")" || plugin_plan="skip"
+case "$plugin_plan" in
+  gone) ;;
+  whole)
+    if command -v omarchy >/dev/null 2>&1; then
+      omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
+      omarchy plugin remove "$PLUGIN_ID" --yes 2>/dev/null || true
+    fi
+    if [[ ! -L "$PLUGIN_DST" && -d "$PLUGIN_DST" ]]; then
+      peponi_remove_tree "$PLUGIN_DST"
+    fi
+    peponi_plugin_tool clear-stamp || true
     echo "    removed $PLUGIN_DST"
     ;;
-  missing) ;;
+  files)
+    if command -v omarchy >/dev/null 2>&1; then
+      omarchy plugin disable "$PLUGIN_ID" 2>/dev/null || true
+    fi
+    peponi_plugin_tool remove-recorded "$PLUGIN_DST"
+    echo "    removed files this installer wrote; left other files in $PLUGIN_DST"
+    ;;
   *)
-    echo "    left $PLUGIN_DST in place (not a $PLUGIN_ID install)"
+    echo "    left $PLUGIN_DST in place (no install record for this folder)"
     ;;
 esac
 
