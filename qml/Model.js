@@ -219,6 +219,8 @@ var PEPONI_ENV_KEEP = [
 ]
 
 // lookup(key) reads one variable from the parent. Everything else is dropped.
+// Quickshell copies a parent variable back in when the value is null, so this
+// map only contains real strings. PATH is always the system directories.
 function peponiChildEnv(lookup) {
   var env = { PATH: "/usr/bin:/bin" }
   for (var i = 0; i < PEPONI_ENV_KEEP.length; i++) {

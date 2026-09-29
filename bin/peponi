@@ -33,6 +33,12 @@ unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_BIND_NOW \
   PYTHONNODEBUGRANGES PYTHONVERBOSE PYTHONOPTIMIZE PYTHONUNBUFFERED \
   PYTHONLEGACYWINDOWSSTDIO PYTHONCOERCECLOCALE PYTHONUTF8 \
   BASH_ENV ENV
+# These names are programs this script chooses. They are not settings.
+# If the parent session already set PEPONI_CURL=/home/someone/curl, a later
+# "only fill this in when empty" check would run that program and hand it
+# the password file. Throw the parent values away before we look anything up.
+unset PEPONI_READLINK PEPONI_STAT PEPONI_PYTHON PEPONI_ENV \
+  PEPONI_CURL PEPONI_MKTEMP PEPONI_WC PEPONI_CAT PEPONI_RM PEPONI_CHMOD
 export PATH="/usr/bin:/bin"
 hash -r
 unset -f python3 python curl mktemp wc cat rm chmod env 2>/dev/null || true
@@ -100,14 +106,28 @@ peponi_python() {
   "$PEPONI_ENV" -i LANG=C.UTF-8 LC_ALL=C.UTF-8 "$PEPONI_PYTHON" -I "$@"
 }
 
-# curl, mktemp, wc, cat, rm, chmod — resolved the first time we send secrets.
+# curl, mktemp, wc, cat, rm, chmod — the programs that touch the password file.
+# Always look them up again. Never keep a path that came from the environment.
 load_net_tools() {
-  [[ -n "${PEPONI_CURL:-}" ]] || PEPONI_CURL="$(trusted_tool curl)" || die "trusted curl is not in /usr/bin or /bin"
-  [[ -n "${PEPONI_MKTEMP:-}" ]] || PEPONI_MKTEMP="$(trusted_tool mktemp)" || die "trusted mktemp is not in /usr/bin or /bin"
-  [[ -n "${PEPONI_WC:-}" ]] || PEPONI_WC="$(trusted_tool wc)" || die "trusted wc is not in /usr/bin or /bin"
-  [[ -n "${PEPONI_CAT:-}" ]] || PEPONI_CAT="$(trusted_tool cat)" || die "trusted cat is not in /usr/bin or /bin"
-  [[ -n "${PEPONI_RM:-}" ]] || PEPONI_RM="$(trusted_tool rm)" || die "trusted rm is not in /usr/bin or /bin"
-  [[ -n "${PEPONI_CHMOD:-}" ]] || PEPONI_CHMOD="$(trusted_tool chmod)" || die "trusted chmod is not in /usr/bin or /bin"
+  PEPONI_CURL="$(trusted_tool curl)" || die "trusted curl is not in /usr/bin or /bin"
+  PEPONI_MKTEMP="$(trusted_tool mktemp)" || die "trusted mktemp is not in /usr/bin or /bin"
+  PEPONI_WC="$(trusted_tool wc)" || die "trusted wc is not in /usr/bin or /bin"
+  PEPONI_CAT="$(trusted_tool cat)" || die "trusted cat is not in /usr/bin or /bin"
+  PEPONI_RM="$(trusted_tool rm)" || die "trusted rm is not in /usr/bin or /bin"
+  PEPONI_CHMOD="$(trusted_tool chmod)" || die "trusted chmod is not in /usr/bin or /bin"
+}
+
+# Lock a password or token file. Uses the trusted chmod, not a PATH lookup.
+# Does not require curl, so local mode still works with no network tools.
+chmod_private() {
+  PEPONI_CHMOD="$(trusted_tool chmod)" || die "trusted chmod is not in /usr/bin or /bin"
+  "$PEPONI_CHMOD" 600 -- "$1"
+}
+
+# Delete a password or token file with the trusted rm.
+rm_private() {
+  PEPONI_RM="$(trusted_tool rm)" || die "trusted rm is not in /usr/bin or /bin"
+  "$PEPONI_RM" -f -- "$1"
 }
 
 PEPONI_CONFIG_DIR="${PEPONI_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/peponi}"
@@ -280,7 +300,7 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY
-  chmod 600 "$PEPONI_CONFIG"
+  chmod_private "$PEPONI_CONFIG"
 }
 
 read_host() {
@@ -332,11 +352,11 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 ' "$PEPONI_CREDENTIALS"
-  chmod 600 "$PEPONI_CREDENTIALS"
+  chmod_private "$PEPONI_CREDENTIALS"
 }
 
 clear_credentials() {
-  rm -f "$PEPONI_CREDENTIALS"
+  rm_private "$PEPONI_CREDENTIALS"
 }
 
 # Remember local vs cloud. "none" clears the flag so the overlay shows
@@ -362,7 +382,7 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY
-  chmod 600 "$PEPONI_CONFIG"
+  chmod_private "$PEPONI_CONFIG"
 }
 
 read_mode() {
