@@ -128,6 +128,8 @@ peponi_plugin_dst() {
 
 # Record of the files this installer wrote. Kept outside the plugin folder
 # so a copied manifest inside that folder cannot pretend to be our record.
+# Each files[] entry must be a relative path inside that folder. The tool
+# refuses ".." and absolute paths, and it does not follow symlinks to delete.
 peponi_plugin_stamp() {
   printf '%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}/peponi/plugin-install.json"
 }
@@ -268,9 +270,66 @@ def read_stamp():
     files = data.get("files")
     if not isinstance(files, list):
         return None
+    # One illegal path means the whole record is untrusted. Do not delete
+    # any of its entries, including the ones that look normal.
+    if any(safe_parts(item) is None for item in files):
+        print(
+            "peponi: install record has a path that leaves the plugin directory; ignoring it",
+            file=sys.stderr,
+        )
+        return None
     return data
 
+def safe_parts(rel):
+    """A recorded path is only a list of names inside the plugin directory.
+
+    Allowed: qml/Overlay.qml
+    Refused: ../secret, /etc/passwd, qml/../../secret
+
+    The text must already be in normal form. We do not "clean it up",
+    because cleaning can hide a jump out of the directory.
+    """
+    if not isinstance(rel, str) or rel == "" or "\0" in rel:
+        return None
+    if os.path.isabs(rel) or os.path.normpath(rel) != rel:
+        return None
+    parts = rel.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return None
+    return parts
+
+def open_parent(parts):
+    """Open the directory that holds the last name, without following links.
+
+    Start at the plugin directory. Each step uses O_NOFOLLOW, so a parent
+    that was replaced by a symlink is a stop, not a doorway to another folder.
+    Returns (directory_fd, final_name). The caller closes the fd.
+    """
+    try:
+        dirfd = os.open(dst, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        for part in parts[:-1]:
+            try:
+                child = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=dirfd,
+                )
+            except OSError:
+                os.close(dirfd)
+                return None
+            os.close(dirfd)
+            dirfd = child
+    except Exception:
+        os.close(dirfd)
+        raise
+    return dirfd, parts[-1]
+
 def write_stamp(files):
+    if any(safe_parts(rel) is None for rel in files):
+        fail("refusing to record a path that leaves the plugin directory")
     parent = os.path.dirname(stamp_path)
     if os.path.lexists(parent):
         info = os.lstat(parent)
@@ -342,15 +401,59 @@ def clear_stamp():
         os.unlink(stamp_path)
 
 def unlink_recorded(rel):
-    # Only the path we recorded. A symlink is removed as a symlink.
-    target = os.path.join(dst, rel)
-    if not os.path.lexists(target):
+    # Only a normal relative path. A symlink is removed as a symlink.
+    # Parents are opened with O_NOFOLLOW, so the name cannot escape dst.
+    parts = safe_parts(rel)
+    if parts is None:
         return False
-    info = os.lstat(target)
-    if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+    opened = open_parent(parts)
+    if opened is None:
         return False
-    os.unlink(target)
-    return True
+    dirfd, name = opened
+    try:
+        try:
+            info = os.lstat(name, dir_fd=dirfd)
+        except OSError:
+            return False
+        if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+            return False
+        os.unlink(name, dir_fd=dirfd)
+        return True
+    finally:
+        os.close(dirfd)
+
+def rmdir_if_empty(rel):
+    # Same walk as unlink: do not rmdir through a symlink parent.
+    parts = safe_parts(rel)
+    if parts is None:
+        return
+    opened = open_parent(parts)
+    if opened is None:
+        return
+    dirfd, name = opened
+    try:
+        try:
+            info = os.lstat(name, dir_fd=dirfd)
+        except OSError:
+            return
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            return
+        try:
+            sub = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dirfd,
+            )
+        except OSError:
+            return
+        try:
+            if os.listdir(sub):
+                return
+        finally:
+            os.close(sub)
+        os.rmdir(name, dir_fd=dirfd)
+    finally:
+        os.close(dirfd)
 
 def prune_empty_parents(removed):
     parents = []
@@ -360,11 +463,7 @@ def prune_empty_parents(removed):
             parents.append(parent)
             parent = os.path.dirname(parent)
     for rel in sorted(set(parents), key=lambda item: item.count("/"), reverse=True):
-        directory = os.path.join(dst, rel)
-        if os.path.islink(directory) or not os.path.isdir(directory):
-            continue
-        if not os.listdir(directory):
-            os.rmdir(directory)
+        rmdir_if_empty(rel)
 
 if cmd == "upgrade":
     if read_manifest(dst) is None:

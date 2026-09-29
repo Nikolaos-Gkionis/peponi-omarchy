@@ -48,7 +48,8 @@ fi
 
 # Copy our files over the top. Do not use --delete: a notes file or any
 # other path we did not write must survive the upgrade. Retired files are
-# removed only when they appear in our install record.
+# removed only when the install record names them as a relative path inside
+# this folder. A ".." entry, or a parent that is a symlink, is not removed.
 rsync -a \
   --exclude '.git' \
   --exclude '.gitignore' \
