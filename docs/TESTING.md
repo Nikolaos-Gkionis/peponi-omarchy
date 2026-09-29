@@ -131,6 +131,8 @@ These must be accepted as instance URLs (no network call until login):
 
 CLI path: copy a different executable to `~/.local/bin/peponi`, run `./scripts/setup.sh`, and confirm it refuses and leaves that file unchanged. Then uninstall must also leave it in place.
 
+A fake `python3` or `curl` earlier on `PATH`, and a `PYTHONSTARTUP` file, must not change the result. `http://evil.example` is still refused, and the fake programs are not executed. The overlay starts the CLI with `clearEnvironment` and `PATH=/usr/bin:/bin` only.
+
 ## 6. Handoff
 
 - No commit/new-repo from the agent — create the standalone repo yourself (see README).

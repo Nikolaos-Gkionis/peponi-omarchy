@@ -171,10 +171,16 @@ Item {
     startPeponi(authLocalFallback, ["auth", "local", "--json"])
   }
 
+  // Same rule as Service.startPeponi: do not inherit PATH or Python/loader variables.
   function startPeponi(proc, args) {
-    var cmd = ["/usr/bin/bash", peponiBin()]
-    for (var i = 0; i < args.length; i++) cmd.push(args[i])
+    var home = Quickshell.env("HOME") || ""
+    var cmd = Model.peponiArgv(home, args)
+    if (!cmd) return
     proc.running = false
+    proc.clearEnvironment = true
+    proc.environment = Model.peponiChildEnv(function(key) {
+      return Quickshell.env(key)
+    })
     proc.command = cmd
     proc.running = true
   }
@@ -449,6 +455,7 @@ Item {
 
   Process {
     id: dayFallback
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: dayFallbackStdout
@@ -469,6 +476,7 @@ Item {
 
   Process {
     id: notYetFallback
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: notYetFallbackStdout
@@ -484,6 +492,7 @@ Item {
 
   Process {
     id: authLocalFallback
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: authLocalFallbackStdout

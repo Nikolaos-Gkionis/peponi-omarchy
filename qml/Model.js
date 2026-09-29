@@ -208,6 +208,35 @@ function peponiCommand() {
   return "peponi"
 }
 
+// Names the overlay may pass into an automatic CLI launch.
+// PATH is not copied from the session. It is fixed to system directories.
+var PEPONI_ENV_KEEP = [
+  "HOME", "USER", "LOGNAME",
+  "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR",
+  "LANG", "LC_ALL", "LC_CTYPE",
+  "PEPONI_CONFIG_DIR", "PEPONI_DATA_DIR", "PEPONI_STORE",
+  "PEPONI_CREDENTIALS", "PEPONI_CONFIG", "PEPONI_BASE_URL"
+]
+
+// lookup(key) reads one variable from the parent. Everything else is dropped.
+function peponiChildEnv(lookup) {
+  var env = { PATH: "/usr/bin:/bin" }
+  for (var i = 0; i < PEPONI_ENV_KEEP.length; i++) {
+    var key = PEPONI_ENV_KEEP[i]
+    var value = lookup(key)
+    if (value !== undefined && value !== null && String(value) !== "")
+      env[key] = String(value)
+  }
+  return env
+}
+
+function peponiArgv(home, args) {
+  if (!home) return null
+  var cmd = ["/usr/bin/bash", home + "/.local/bin/peponi"]
+  for (var i = 0; i < args.length; i++) cmd.push(args[i])
+  return cmd
+}
+
 function dayCommand(dateKey) {
   return [peponiCommand(), "day", dateKey, "--json"]
 }

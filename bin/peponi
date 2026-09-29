@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # peponi — desktop CLI for Omarchy (local store, or any Peponi instance).
 #
 # Ways to use it:
@@ -18,6 +18,97 @@
 # host (localhost, 127.0.0.0/8, or ::1).
 
 set -euo pipefail
+
+# The desktop session can put a user-writable directory first on PATH, and can
+# set PYTHONPATH / PYTHONSTARTUP / LD_PRELOAD. Those must not decide whether a
+# URL is safe, and must not be the curl that reads the password file.
+# LD_PRELOAD already loaded into this process is the parent's job to prevent
+# (the overlay starts us with a cleared environment). Unset here so children
+# such as python and curl do not inherit it.
+unset LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT LD_DEBUG LD_BIND_NOW \
+  PYTHONPATH PYTHONHOME PYTHONSTARTUP PYTHONINSPECT PYTHONUSERBASE \
+  PYTHONSAFEPATH PYTHONWARNINGS PYTHONNOUSERSITE PYTHONEXECUTABLE \
+  PYTHONPLATLIBDIR PYTHONHASHSEED PYTHONMALLOC PYTHONDEVMODE \
+  PYTHONFAULTHANDLER PYTHONTRACEMALLOC PYTHONPROFILEIMPORTTIME \
+  PYTHONNODEBUGRANGES PYTHONVERBOSE PYTHONOPTIMIZE PYTHONUNBUFFERED \
+  PYTHONLEGACYWINDOWSSTDIO PYTHONCOERCECLOCALE PYTHONUTF8 \
+  BASH_ENV ENV
+export PATH="/usr/bin:/bin"
+hash -r
+unset -f python3 python curl mktemp wc cat rm chmod env 2>/dev/null || true
+
+# Only /usr/bin and /bin. Never $PATH. The file must not be writable by this
+# user, must be owned by root, and its real path must stay in those directories
+# (so /usr/bin/python3 cannot be a symlink into a home directory).
+trusted_candidate() {
+  local name="$1" path
+  for path in "/usr/bin/$name" "/bin/$name"; do
+    [[ -e "$path" && -x "$path" && ! -w "$path" ]] || continue
+    printf '%s\n' "$path"
+    return 0
+  done
+  return 1
+}
+
+PEPONI_READLINK="$(trusted_candidate readlink)" || {
+  printf 'peponi: trusted readlink is not in /usr/bin or /bin\n' >&2
+  exit 1
+}
+PEPONI_STAT="$(trusted_candidate stat)" || {
+  printf 'peponi: trusted stat is not in /usr/bin or /bin\n' >&2
+  exit 1
+}
+
+trusted_tool() {
+  local name="$1" path real owner mode gw ow
+  for path in "/usr/bin/$name" "/bin/$name"; do
+    [[ -e "$path" && -x "$path" && ! -w "$path" ]] || continue
+    real="$("$PEPONI_READLINK" -f -- "$path")" || continue
+    case "$real" in
+      /usr/bin/*|/bin/*) ;;
+      *) continue ;;
+    esac
+    [[ -x "$real" && ! -w "$real" ]] || continue
+    owner="$("$PEPONI_STAT" -c '%u' -- "$real")" || continue
+    [[ "$owner" == "0" ]] || continue
+    mode="$("$PEPONI_STAT" -c '%a' -- "$real")" || continue
+    gw=$(( (10#$mode / 10) % 10 ))
+    ow=$(( 10#$mode % 10 ))
+    if (( (gw & 2) || (ow & 2) )); then
+      continue
+    fi
+    printf '%s\n' "$path"
+    return 0
+  done
+  return 1
+}
+
+PEPONI_PYTHON="$(trusted_tool python3)" || {
+  printf 'peponi: trusted python3 is not in /usr/bin or /bin\n' >&2
+  exit 1
+}
+PEPONI_ENV="$(trusted_tool env)" || {
+  printf 'peponi: trusted env is not in /usr/bin or /bin\n' >&2
+  exit 1
+}
+
+# Isolated Python: -I ignores PYTHON* variables, user site-packages, and
+# startup files. env -i passes none of the parent environment through.
+peponi_python() {
+  # No "--" here. After NAME=VALUE, env treats the next word as the program,
+  # so "--" would be executed as a command.
+  "$PEPONI_ENV" -i LANG=C.UTF-8 LC_ALL=C.UTF-8 "$PEPONI_PYTHON" -I "$@"
+}
+
+# curl, mktemp, wc, cat, rm, chmod — resolved the first time we send secrets.
+load_net_tools() {
+  [[ -n "${PEPONI_CURL:-}" ]] || PEPONI_CURL="$(trusted_tool curl)" || die "trusted curl is not in /usr/bin or /bin"
+  [[ -n "${PEPONI_MKTEMP:-}" ]] || PEPONI_MKTEMP="$(trusted_tool mktemp)" || die "trusted mktemp is not in /usr/bin or /bin"
+  [[ -n "${PEPONI_WC:-}" ]] || PEPONI_WC="$(trusted_tool wc)" || die "trusted wc is not in /usr/bin or /bin"
+  [[ -n "${PEPONI_CAT:-}" ]] || PEPONI_CAT="$(trusted_tool cat)" || die "trusted cat is not in /usr/bin or /bin"
+  [[ -n "${PEPONI_RM:-}" ]] || PEPONI_RM="$(trusted_tool rm)" || die "trusted rm is not in /usr/bin or /bin"
+  [[ -n "${PEPONI_CHMOD:-}" ]] || PEPONI_CHMOD="$(trusted_tool chmod)" || die "trusted chmod is not in /usr/bin or /bin"
+}
 
 PEPONI_CONFIG_DIR="${PEPONI_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/peponi}"
 PEPONI_CREDENTIALS="${PEPONI_CREDENTIALS:-$PEPONI_CONFIG_DIR/credentials.json}"
@@ -45,11 +136,22 @@ die() {
 
 json_escape() {
   # Minimal JSON string escape for errors / status
-  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
+  peponi_python -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
 need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1 (install it and retry)"
+  case "$1" in
+    peponi_python|python3)
+      [[ -x "${PEPONI_PYTHON:-}" ]] || die "missing trusted python3 in /usr/bin or /bin"
+      ;;
+    curl)
+      load_net_tools
+      [[ -x "${PEPONI_CURL:-}" ]] || die "missing trusted curl in /usr/bin or /bin"
+      ;;
+    *)
+      command -v "$1" >/dev/null 2>&1 || die "missing required command: $1 (install it and retry)"
+      ;;
+  esac
 }
 
 base_url() {
@@ -59,7 +161,7 @@ base_url() {
   fi
   if [[ -f "$PEPONI_CREDENTIALS" ]]; then
     local u
-    u="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("base_url",""))' "$PEPONI_CREDENTIALS" 2>/dev/null || true)"
+    u="$(peponi_python -c 'import json,sys; print(json.load(open(sys.argv[1])).get("base_url",""))' "$PEPONI_CREDENTIALS" 2>/dev/null || true)"
     if [[ -n "$u" ]]; then
       echo "${u%/}"
       return
@@ -86,7 +188,7 @@ credential_url_error() {
 # The caller gives curl this canonical form, never the raw user string, so a
 # tricky spelling cannot make curl connect somewhere else.
 canonical_credential_url() {
-  python3 -c '
+  peponi_python -c '
 import ipaddress, sys
 from urllib.parse import urlsplit
 
@@ -161,7 +263,7 @@ save_host() {
   local url="$1"
   mkdir -p "$PEPONI_CONFIG_DIR"
   umask 077
-  python3 - "$PEPONI_CONFIG" "$url" <<'PY'
+  peponi_python - "$PEPONI_CONFIG" "$url" <<'PY'
 import json, sys
 path, url = sys.argv[1], sys.argv[2]
 data = {}
@@ -182,7 +284,7 @@ PY
 }
 
 read_host() {
-  python3 -c '
+  peponi_python -c '
 import json, sys
 try:
     print(json.load(open(sys.argv[1])).get("base_url") or "")
@@ -209,7 +311,7 @@ EOF
 read_token() {
   [[ -f "$PEPONI_CREDENTIALS" ]] || die "not signed in — run: peponi auth login" 2
   local token
-  token="$(python3 -c 'import json,sys; t=json.load(open(sys.argv[1])).get("token") or ""; print(t)' "$PEPONI_CREDENTIALS")"
+  token="$(peponi_python -c 'import json,sys; t=json.load(open(sys.argv[1])).get("token") or ""; print(t)' "$PEPONI_CREDENTIALS")"
   [[ -n "$token" ]] || die "credentials missing token — run: peponi auth login" 2
   printf '%s' "$token"
 }
@@ -219,7 +321,7 @@ save_credentials() {
   mkdir -p "$PEPONI_CONFIG_DIR"
   umask 077
   # Token on stdin (not python argv) so it cannot be read from /proc/*/cmdline.
-  printf '%s\0%s\0%s\0%s' "$token" "$email" "$url" "$expires" | python3 -c '
+  printf '%s\0%s\0%s\0%s' "$token" "$email" "$url" "$expires" | peponi_python -c '
 import json, sys
 path = sys.argv[1]
 token, email, url, expires = sys.stdin.read().split("\0", 3)
@@ -243,7 +345,7 @@ save_mode() {
   local mode="$1"
   mkdir -p "$PEPONI_CONFIG_DIR"
   umask 077
-  python3 - "$PEPONI_CONFIG" "$mode" <<'PY'
+  peponi_python - "$PEPONI_CONFIG" "$mode" <<'PY'
 import json, sys
 path, mode = sys.argv[1], sys.argv[2]
 data = {}
@@ -264,7 +366,7 @@ PY
 }
 
 read_mode() {
-  python3 -c '
+  peponi_python -c '
 import json, sys
 try:
     print(json.load(open(sys.argv[1])).get("mode") or "")
@@ -295,8 +397,8 @@ ensure_store() {
   store_op init >/dev/null
 }
 store_op() {
-  need_cmd python3
-  python3 - "$PEPONI_STORE" "$@" <<'PY'
+  need_cmd peponi_python
+  peponi_python - "$PEPONI_STORE" "$@" <<'PY'
 import json, os, sys
 from pathlib import Path
 
@@ -646,7 +748,7 @@ PY
 }
 
 local_status_json() {
-  python3 - "$PEPONI_STORE" "$PEPONI_CREDENTIALS" <<'PY'
+  peponi_python - "$PEPONI_STORE" "$PEPONI_CREDENTIALS" <<'PY'
 import json, sys
 store, creds_path = sys.argv[1], sys.argv[2]
 email = "this machine"
@@ -695,12 +797,14 @@ _curl_json() {
     # 2 means "do not send", not a network failure. api_curl prints the reason.
     url="$(canonical_credential_url "$raw_url")" || return 2
   fi
+  load_net_tools || return 1
   local tmp_dir cfg out code body curl_stat=0 size ok=0 escaped
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/peponi.XXXXXX")" || return 1
-  chmod 700 "$tmp_dir"
+  # /tmp only. $TMPDIR is chosen by the caller and is not a trust anchor.
+  tmp_dir="$("$PEPONI_MKTEMP" -d /tmp/peponi.XXXXXX)" || return 1
+  "$PEPONI_CHMOD" 700 "$tmp_dir"
   # Delete the config (token/password) even if curl is interrupted.
   # shellcheck disable=SC2064
-  trap "rm -rf -- $(printf '%q' "$tmp_dir")" EXIT
+  trap "\"$PEPONI_RM\" -rf -- $(printf '%q' "$tmp_dir")" EXIT
 
   cfg="$tmp_dir/config"
   out="$tmp_dir/out"
@@ -716,15 +820,16 @@ _curl_json() {
     fi
     if [[ -n "$data" ]]; then
       printf '%s' "$data" >"$tmp_dir/data"
-      chmod 600 "$tmp_dir/data"
+      "$PEPONI_CHMOD" 600 "$tmp_dir/data"
       printf 'data-binary = "@%s"\n' "$tmp_dir/data"
     fi
   } >"$cfg"
-  chmod 600 "$cfg"
+  "$PEPONI_CHMOD" 600 "$cfg"
 
   code="$(
     ulimit -f $((PEPONI_CURL_MAX_BYTES / 512 + 1)) 2>/dev/null || true
-    curl -sS -X "$method" \
+    # env -i so a proxy variable or loader variable cannot ride along.
+    "$PEPONI_ENV" -i "$PEPONI_CURL" -sS -X "$method" \
       --connect-timeout "$PEPONI_CURL_CONNECT_TIMEOUT" \
       --max-time "$PEPONI_CURL_MAX_TIME" \
       --max-filesize "$PEPONI_CURL_MAX_BYTES" \
@@ -735,15 +840,15 @@ _curl_json() {
   )" || curl_stat=$?
 
   if [[ "$curl_stat" -eq 0 && -f "$out" ]]; then
-    size="$(wc -c <"$out")"
+    size="$("$PEPONI_WC" -c <"$out")"
     size="${size//[[:space:]]/}"
     if [[ "$size" -le "$PEPONI_CURL_MAX_BYTES" ]]; then
-      body="$(cat "$out")"
+      body="$("$PEPONI_CAT" "$out")"
       ok=1
     fi
   fi
 
-  rm -rf -- "$tmp_dir"
+  "$PEPONI_RM" -rf -- "$tmp_dir"
   trap - EXIT
   [[ "$ok" -eq 1 ]] || return 1
   printf '%s\n%s' "$code" "$body"
@@ -791,7 +896,7 @@ print_or_json() {
 }
 
 cmd_auth_local() {
-  need_cmd python3
+  need_cmd peponi_python
   save_mode local
   store_op init >/dev/null
   if [[ "$json_mode" -eq 1 ]]; then
@@ -806,7 +911,7 @@ cmd_auth_local() {
 
 cmd_auth_login() {
   need_cmd curl
-  need_cmd python3
+  need_cmd peponi_python
 
   # Default: copy tasks onto this machine, then work locally (survives the
   # hosted week ending). --cloud keeps a live connection to that instance.
@@ -874,14 +979,14 @@ cmd_auth_login() {
 
   local payload
   # Password on stdin (not python argv) — same /proc cmdline leak as curl.
-  payload="$(printf '%s\0%s' "$email" "$password" | python3 -c 'import json,sys; email, password = sys.stdin.read().split("\0", 1); print(json.dumps({"email": email, "password": password}))')"
+  payload="$(printf '%s\0%s' "$email" "$password" | peponi_python -c 'import json,sys; email, password = sys.stdin.read().split("\0", 1); print(json.dumps({"email": email, "password": password}))')"
   password=""
 
   local resp code body err_code
   resp="$(api_curl POST /api/v1/auth/login --data "$payload")"
   code="${resp%%$'\n'*}"
   body="${resp#*$'\n'}"
-  err_code="$(python3 -c 'import json,sys
+  err_code="$(peponi_python -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("error") or "")
 except Exception:
@@ -902,8 +1007,8 @@ except Exception:
   fi
 
   local token expires
-  token="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$body")"
-  expires="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("expires_at") or "")' <<<"$body")"
+  token="$(peponi_python -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$body")"
+  expires="$(peponi_python -c 'import json,sys; print(json.load(sys.stdin).get("expires_at") or "")' <<<"$body")"
   save_credentials "$token" "$email" "$url" "$expires"
 
   local mode="cloud"
@@ -923,7 +1028,7 @@ except Exception:
   fi
 
   if [[ "$json_mode" -eq 1 ]]; then
-    python3 -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["mode"]=sys.argv[1]; d["pulled"]=sys.argv[2]=="1"; d["instance"]=sys.argv[3]; d["credentials"]="saved"; print(json.dumps(d))' "$mode" "$pulled" "$url" <<<"$body"
+    peponi_python -c 'import json,sys; d=json.load(sys.stdin); d.pop("token", None); d["ok"]=True; d["mode"]=sys.argv[1]; d["pulled"]=sys.argv[2]=="1"; d["instance"]=sys.argv[3]; d["credentials"]="saved"; print(json.dumps(d))' "$mode" "$pulled" "$url" <<<"$body"
   else
     printf 'Signed in as %s (%s)\n' "$email" "$url"
     printf 'Login saved to %s\n' "$PEPONI_CREDENTIALS"
@@ -940,7 +1045,7 @@ except Exception:
 }
 
 cmd_auth_host() {
-  need_cmd python3
+  need_cmd peponi_python
   local raw="${1:-}"
   if [[ -n "$raw" ]]; then
     local url
@@ -963,10 +1068,10 @@ cmd_auth_host() {
 # Returns 1 if the export endpoint is missing or auth fails — caller decides.
 cmd_pull_snapshot() {
   need_cmd curl
-  need_cmd python3
+  need_cmd peponi_python
   [[ -f "$PEPONI_CREDENTIALS" ]] || return 1
   local token url resp code body tmp
-  token="$(python3 -c 'import json,sys
+  token="$(peponi_python -c 'import json,sys
 try:
     print(json.load(open(sys.argv[1])).get("token") or "")
 except Exception:
@@ -1007,7 +1112,7 @@ cmd_pull() {
 }
 
 cmd_auth_logout() {
-  need_cmd python3
+  need_cmd peponi_python
   local had_local=0
   [[ "$(read_mode)" == "local" ]] && had_local=1
   save_mode none
@@ -1051,7 +1156,7 @@ cmd_auth_logout() {
 }
 
 cmd_auth_status() {
-  need_cmd python3
+  need_cmd peponi_python
   local mode
   mode="$(effective_mode)"
 
@@ -1083,7 +1188,7 @@ cmd_auth_status() {
   body="${resp#*$'\n'}"
   if [[ "$code" != "200" ]]; then
     local err_code
-    err_code="$(python3 -c 'import json,sys
+    err_code="$(peponi_python -c 'import json,sys
 try:
     print(json.load(sys.stdin).get("error") or "")
 except Exception:
@@ -1104,7 +1209,7 @@ except Exception:
 }
 
 cmd_day() {
-  need_cmd python3
+  need_cmd peponi_python
   local date="${1:-}"
   [[ -n "$date" ]] || die "usage: peponi day YYYY-MM-DD [--json]"
   [[ "$date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "date must be YYYY-MM-DD"
@@ -1128,7 +1233,7 @@ cmd_day() {
 }
 
 cmd_not_yet() {
-  need_cmd python3
+  need_cmd peponi_python
   local sub="${1:-}"
   if [[ "$sub" == "add" ]]; then
     shift
@@ -1168,7 +1273,7 @@ cmd_not_yet() {
 # failed instance request. Cloud POST is best-effort only.
 # Usage: peponi not-yet add TITLE...
 cmd_not_yet_add() {
-  need_cmd python3
+  need_cmd peponi_python
   local title="$*"
   title="${title#"${title%%[![:space:]]*}"}"
   title="${title%"${title##*[![:space:]]}"}"
@@ -1183,7 +1288,7 @@ cmd_not_yet_add() {
   if [[ "$mode" == "cloud" ]]; then
     need_cmd curl || true
     local payload resp
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+    payload="$(peponi_python -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
     resp="$(api_curl POST /api/v1/not_yet/tasks --auth --data "$payload" || true)"
     # Ignore cloud errors — the local file is the source of truth here.
     : "${resp:-}"
@@ -1193,7 +1298,7 @@ cmd_not_yet_add() {
     printf '%s\n' "$body"
     return
   fi
-  python3 -c 'import json,sys
+  peponi_python -c 'import json,sys
 d=json.load(sys.stdin)
 t=d.get("task") or {}
 print("Added \"%s\" to Not Yet (id %s)" % (t.get("title") or "", t.get("id") or "?"))
@@ -1203,7 +1308,7 @@ print("Added \"%s\" to Not Yet (id %s)" % (t.get("title") or "", t.get("id") or 
 # Move a Not Yet task onto today (or a given date).
 # Usage: peponi not-yet today ID [YYYY-MM-DD]
 cmd_not_yet_today() {
-  need_cmd python3
+  need_cmd peponi_python
   local id="${1:-}" date="${2:-}"
   [[ -n "$id" ]] || die "usage: peponi not-yet today ID [YYYY-MM-DD]"
   [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from the Not Yet list)"
@@ -1222,9 +1327,9 @@ cmd_not_yet_today() {
   # Live instance day view — copy the title onto that date too.
   if [[ "$(effective_mode)" == "cloud" ]]; then
     local title payload resp
-    title="$(python3 -c 'import json,sys; print((json.load(sys.stdin).get("task") or {}).get("title") or "")' <<<"$body")"
+    title="$(peponi_python -c 'import json,sys; print((json.load(sys.stdin).get("task") or {}).get("title") or "")' <<<"$body")"
     if [[ -n "$title" ]]; then
-      payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+      payload="$(peponi_python -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
       resp="$(api_curl POST "/api/v1/days/$date/tasks" --auth --data "$payload" || true)"
       : "${resp:-}"
     fi
@@ -1234,7 +1339,7 @@ cmd_not_yet_today() {
     printf '%s\n' "$body"
     return
   fi
-  python3 -c 'import json,sys
+  peponi_python -c 'import json,sys
 d=json.load(sys.stdin)
 t=d.get("task") or {}
 print("Moved \"%s\" to %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("id") or "?"))
@@ -1243,7 +1348,7 @@ print("Moved \"%s\" to %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("
 # Toggle completed on a task (day list or Not Yet).
 # Usage: peponi tick ID [on|off]
 cmd_tick() {
-  need_cmd python3
+  need_cmd peponi_python
   local id="${1:-}" state="${2:-}"
   [[ -n "$id" ]] || die "usage: peponi tick ID [on|off]"
   [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from peponi day --json)"
@@ -1264,7 +1369,7 @@ cmd_tick() {
     need_cmd curl
     local completed payload resp code
     completed="$([[ "$state" == "on" ]] && echo true || echo false)"
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"completed": sys.argv[1]=="true"}))' "$completed")"
+    payload="$(peponi_python -c 'import json,sys; print(json.dumps({"completed": sys.argv[1]=="true"}))' "$completed")"
     resp="$(api_curl PATCH "/api/v1/todos/$id" --auth --data "$payload")"
     code="${resp%%$'\n'*}"
     body="${resp#*$'\n'}"
@@ -1283,7 +1388,7 @@ cmd_tick() {
     printf '%s\n' "$body"
     return
   fi
-  python3 -c 'import json,sys
+  peponi_python -c 'import json,sys
 d=json.load(sys.stdin)
 t=d.get("task") or {}
 state = "done" if t.get("completed") else "open"
@@ -1294,7 +1399,7 @@ print("Ticked \"%s\" → %s (id %s)" % (t.get("title") or "", state, t.get("id")
 # Move a task up or down inside its unfinished/done group.
 # Usage: peponi move ID up|down [YYYY-MM-DD]
 cmd_move() {
-  need_cmd python3
+  need_cmd peponi_python
   local id="${1:-}" dir="${2:-}" date="${3:-}"
   [[ -n "$id" && ( "$dir" == "up" || "$dir" == "down" ) ]] || die "usage: peponi move ID up|down [YYYY-MM-DD]"
   [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number"
@@ -1313,7 +1418,7 @@ cmd_move() {
     [[ "$code" =~ ^2 ]] || die "could not load $date to move that task"
     tmp="$(mktemp)"
     printf '%s' "$day_json" > "$tmp"
-    body="$(python3 - "$tmp" "$id" "$dir" <<'PY'
+    body="$(peponi_python - "$tmp" "$id" "$dir" <<'PY'
 import json, sys
 path, tid, direction = sys.argv[1], sys.argv[2], sys.argv[3]
 data = json.load(open(path))
@@ -1354,8 +1459,8 @@ PY
     }
     rm -f "$tmp"
     local ids payload
-    ids="$(python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("todo_ids") or []))' <<<"$body")"
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"todo_ids": json.loads(sys.argv[1])}))' "$ids")"
+    ids="$(peponi_python -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("todo_ids") or []))' <<<"$body")"
+    payload="$(peponi_python -c 'import json,sys; print(json.dumps({"todo_ids": json.loads(sys.argv[1])}))' "$ids")"
     resp="$(api_curl PATCH "/api/v1/days/$date/reorder" --auth --data "$payload")"
     code="${resp%%$'\n'*}"
     if [[ ! "$code" =~ ^2 ]]; then
@@ -1373,7 +1478,7 @@ PY
     printf '%s\n' "$body"
     return
   fi
-  python3 -c 'import json,sys
+  peponi_python -c 'import json,sys
 d=json.load(sys.stdin)
 t=d.get("task") or {}
 moved = "moved" if d.get("moved") else "already at the end"
@@ -1385,7 +1490,7 @@ print("%s \"%s\" %s (id %s)" % (sys.argv[1], t.get("title") or "", moved, t.get(
 # Usage: peponi pref [--json]
 #        peponi pref roll-over [on|off] [--json]
 cmd_pref() {
-  need_cmd python3
+  need_cmd peponi_python
   local key="${1:-}" value="${2:-}"
   ensure_store
   local body
@@ -1405,7 +1510,7 @@ cmd_pref() {
     printf '%s\n' "$body"
     return
   fi
-  python3 -c 'import json,sys
+  peponi_python -c 'import json,sys
 p=(json.load(sys.stdin).get("prefs") or {})
 print("Roll unfinished tasks to today: %s" % ("on" if p.get("roll_over", True) else "off"))
 ' <<<"$body"
@@ -1413,7 +1518,7 @@ print("Roll unfinished tasks to today: %s" % ("on" if p.get("roll_over", True) e
 
 # Usage: peponi add [YYYY-MM-DD] TITLE...
 cmd_add() {
-  need_cmd python3
+  need_cmd peponi_python
   local date title
   if [[ "${1:-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
     date="$1"
@@ -1438,7 +1543,7 @@ cmd_add() {
   else
     need_cmd curl
     local payload resp
-    payload="$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
+    payload="$(peponi_python -c 'import json,sys; print(json.dumps({"title":sys.argv[1]}))' "$title")"
     resp="$(api_curl POST "/api/v1/days/$date/tasks" --auth --data "$payload")"
     code="${resp%%$'\n'*}"
     body="${resp#*$'\n'}"
@@ -1450,7 +1555,7 @@ cmd_add() {
     return
   fi
   if [[ "$code" =~ ^2 ]]; then
-    python3 -c 'import json,sys
+    peponi_python -c 'import json,sys
 d=json.load(sys.stdin)
 t=d.get("task") or {}
 print("Added \"%s\" on %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("id") or "?"))
@@ -1465,7 +1570,7 @@ print("Added \"%s\" on %s (id %s)" % (t.get("title") or "", sys.argv[1], t.get("
 # Delete a task by id (from peponi day JSON).
 # Usage: peponi rm ID
 cmd_rm() {
-  need_cmd python3
+  need_cmd peponi_python
   local id="${1:-}"
   [[ -n "$id" ]] || die "usage: peponi rm ID"
   [[ "$id" =~ ^[0-9]+$ ]] || die "id must be a number (from peponi day --json)"

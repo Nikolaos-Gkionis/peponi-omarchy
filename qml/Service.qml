@@ -47,12 +47,19 @@ Item {
     return "peponi"
   }
 
-  // bash + the script path: /usr/bin/env in the shebang needs PATH, and
-  // Process must be flipped off then on or a second fetch is a no-op.
+  // /usr/bin/bash plus the script path, with a cleared environment.
+  // The desktop session may have a user-writable PATH, PYTHONPATH, or
+  // LD_PRELOAD. None of those are passed on. PATH for the child is only
+  // /usr/bin:/bin. Flip running off then on or a second fetch is a no-op.
   function startPeponi(proc, args) {
-    var cmd = ["/usr/bin/bash", peponiBin()]
-    for (var i = 0; i < args.length; i++) cmd.push(args[i])
+    var home = Quickshell.env("HOME") || ""
+    var cmd = Model.peponiArgv(home, args)
+    if (!cmd) return
     proc.running = false
+    proc.clearEnvironment = true
+    proc.environment = Model.peponiChildEnv(function(key) {
+      return Quickshell.env(key)
+    })
     proc.command = cmd
     proc.running = true
   }
@@ -440,6 +447,7 @@ Item {
   // a successful `peponi auth status` look like a sign-in failure.
   Process {
     id: authProcess
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: authStdout
@@ -456,6 +464,7 @@ Item {
 
   Process {
     id: dayProcess
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: dayStdout
@@ -468,6 +477,7 @@ Item {
 
   Process {
     id: notYetProcess
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: notYetStdout
@@ -480,6 +490,7 @@ Item {
 
   Process {
     id: mutateProcess
+    clearEnvironment: true
     command: []
     stdout: StdioCollector {
       id: mutateStdout
