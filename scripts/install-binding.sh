@@ -7,9 +7,10 @@ MARKER="peponi.one-day"
 
 say() { printf '%s\n' "$*"; }
 
-say "==> Checking for SUPER+ALT collisions…"
+say "==> Checking for keybinding collisions…"
 if command -v omarchy >/dev/null 2>&1; then
-  omarchy menu keybindings --print 2>/dev/null | grep -E 'SUPER \+ ALT \+ (O|Y|LEFT|RIGHT|SPACE|K|J)' || say "    (none obvious in printout)"
+  # Super+Alt+Space is the Apps menu. Do not bind Peponi there.
+  omarchy menu keybindings --print 2>/dev/null | grep -E 'CTRL \+ ALT \+ SPACE|SUPER \+ ALT \+ (Y|LEFT|RIGHT|K|J)' || say "    (none obvious in printout)"
 fi
 
 mkdir -p "$(dirname "$BINDINGS_LUA")"
@@ -23,14 +24,14 @@ fi
 cat >> "$BINDINGS_LUA" <<'LUA'
 
 -- Peponi One Day (desktop helper)
-o.bind("SUPER + ALT + O", "Peponi one day", "omarchy-shell shell toggle peponi.one-day '{}'")
+-- Ctrl+Alt+Space opens the overlay. Super+Alt+Space stays the Apps menu.
+o.bind("CTRL + ALT + SPACE", "Peponi one day", "omarchy-shell shell toggle peponi.one-day '{}'")
 o.bind("SUPER + ALT + LEFT", "Peponi previous day", "omarchy-shell shell call peponi.one-day prevDay ''")
 o.bind("SUPER + ALT + RIGHT", "Peponi next day", "omarchy-shell shell call peponi.one-day nextDay ''")
 o.bind("SUPER + ALT + Y", "Peponi Not Yet", "omarchy-shell shell call peponi.one-day toggleDrawer ''")
-o.bind("SUPER + ALT + SPACE", "Peponi tick task", "omarchy-shell shell call peponi.one-day toggleSelected ''")
 o.bind("SUPER + ALT + K", "Peponi move task up", "omarchy-shell shell call peponi.one-day moveSelectedUp ''")
 o.bind("SUPER + ALT + J", "Peponi move task down", "omarchy-shell shell call peponi.one-day moveSelectedDown ''")
 LUA
 
-say "==> Appended SUPER+ALT binds to $BINDINGS_LUA"
+say "==> Appended Peponi binds to $BINDINGS_LUA"
 say "    Reload Hyprland config if they do not apply immediately"

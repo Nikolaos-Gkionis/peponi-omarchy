@@ -42,7 +42,7 @@ Sign-in sends your password only over HTTPS. HTTP is allowed only for loopback (
 
 - Click the **P** icon on the Omarchy bar, or
 - Run: `omarchy-shell shell toggle peponi.one-day '{}'`
-- Optional: `Super + Alt + O` (if you installed keybindings)
+- Optional: `Ctrl + Alt + Space` (if you installed keybindings)
 
 Right-click the bar icon to refresh day data.
 
@@ -84,10 +84,9 @@ CLI equivalent of step 4: `peponi not-yet today ID`.
 
 | Chord | Action |
 |-------|--------|
-| `Super + Alt + O` | Toggle overlay |
+| `Ctrl + Alt + Space` | Toggle overlay |
 | `Super + Alt + ←/→` | Change day |
 | `Super + Alt + Y` | Toggle Not Yet |
-| `Super + Alt + Space` | Tick the highlighted task |
 | `Super + Alt + K` / `J` | Move the highlighted task up / down |
 
 Install later with:

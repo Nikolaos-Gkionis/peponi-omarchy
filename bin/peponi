@@ -1244,6 +1244,56 @@ except Exception:
   print_or_json "$code" "$body"
 }
 
+# The website moves unfinished tasks onto today when that day is opened.
+# GET /api/v1/days/TODAY does the same, but only for rows stored as
+# completed=false. A brand-new task is often completed=NULL. The API still
+# shows NULL as open, and the roll query skips it, so the task stays on
+# yesterday. Writing false means "still open", not ticked. The next GET
+# today then uses the server's own roll.
+cloud_mark_past_open_for_roll() {
+  local today="$1"
+  local resp code body tmp ids id patch
+  resp="$(api_curl GET /api/v1/export --auth)" || return 0
+  code="${resp%%$'\n'*}"
+  body="${resp#*$'\n'}"
+  [[ "$code" == "200" ]] || return 0
+  tmp="$(mktemp)"
+  printf '%s' "$body" >"$tmp"
+  ids="$(peponi_python - "$tmp" "$today" <<'PY'
+import json, sys
+path, today = sys.argv[1], sys.argv[2]
+data = json.load(open(path))
+user = data.get("user") or {}
+# Explicit off matches the website. Missing means "on".
+if user.get("roll_over") is False:
+    raise SystemExit(0)
+days = data.get("days") or {}
+for date, tasks in days.items():
+    if not isinstance(date, str) or len(date) != 10 or date >= today:
+        continue
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        # The API writes completed:false for both a real false and a NULL.
+        # NULL is what the roll query skips, and we cannot tell them apart
+        # from this JSON. Writing false leaves the task open either way.
+        if task.get("completed") is True or task.get("done") is True:
+            continue
+        tid = task.get("id")
+        if isinstance(tid, bool):
+            continue
+        if isinstance(tid, int) or (isinstance(tid, str) and tid.isdigit()):
+            print(tid)
+PY
+)"
+  rm -f -- "$tmp"
+  for id in $ids; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
+    # One failed write must not stop the rest, and must not hide today's list.
+    ( api_curl PATCH "/api/v1/todos/$id" --auth --data '{"completed":false}' >/dev/null ) || true
+  done
+}
+
 cmd_day() {
   need_cmd peponi_python
   local date="${1:-}"
@@ -1261,6 +1311,11 @@ cmd_day() {
   fi
 
   need_cmd curl
+  # Only the user's today. Opening an old day must not move tasks.
+  # A subshell so a failed export does not skip loading the day list.
+  if [[ "$date" == "$(date +%F)" ]]; then
+    ( cloud_mark_past_open_for_roll "$date" ) || true
+  fi
   local resp code body
   resp="$(api_curl GET "/api/v1/days/$date" --auth)"
   code="${resp%%$'\n'*}"

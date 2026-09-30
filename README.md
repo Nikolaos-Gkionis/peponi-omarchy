@@ -129,10 +129,9 @@ While the drawer is open, those keys apply to Not Yet, not the day. `a` means â€
 
 | Chord | Action |
 |-------|--------|
-| `SUPER + ALT + O` | Toggle overlay |
+| `CTRL + ALT + SPACE` | Toggle overlay |
 | `SUPER + ALT + LEFT/RIGHT` | Prev / next day |
 | `SUPER + ALT + Y` | Toggle Not Yet drawer |
-| `SUPER + ALT + SPACE` | Tick highlighted task |
 | `SUPER + ALT + K` / `J` | Move highlighted task up / down |
 
 ## Uninstall
